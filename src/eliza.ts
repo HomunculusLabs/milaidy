@@ -13,6 +13,8 @@ import * as readline from "node:readline";
 import {
   AgentRuntime,
   ChannelType,
+  EventType,
+  ModelType,
   createCharacter,
   createMessageMemory,
   logger,
@@ -151,6 +153,10 @@ const PROVIDER_PLUGIN_MAP: Readonly<Record<string, string>> = {
   XAI_API_KEY: "@elizaos/plugin-xai",
   OPENROUTER_API_KEY: "@elizaos/plugin-openrouter",
   OLLAMA_BASE_URL: "@elizaos/plugin-ollama",
+  // z.ai GLM Coding Plan — loaded as a local plugin (not an npm package)
+  ZAI_API_KEY: "__local:plugin-zai",
+  // LM Studio — local OpenAI-compatible server
+  LMSTUDIO_BASE_URL: "@elizaos/plugin-openai",
   // ElizaCloud — loaded when API key is present OR cloud is explicitly enabled
   ELIZAOS_CLOUD_API_KEY: "@elizaos/plugin-elizacloud",
   ELIZAOS_CLOUD_ENABLED: "@elizaos/plugin-elizacloud",
@@ -237,6 +243,195 @@ export function collectPluginNames(config: MilaidyConfig): Set<string> {
   return pluginsToLoad;
 }
 
+// ---------------------------------------------------------------------------
+// z.ai GLM Coding Plan plugin (inline, raw fetch — no ai SDK dependency)
+// ---------------------------------------------------------------------------
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/** Call z.ai's Anthropic-compatible Messages API via raw fetch. */
+async function zaiMessagesAPI(
+  baseUrl: string,
+  apiKey: string,
+  body: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    system?: string;
+    max_tokens?: number;
+    temperature?: number;
+    stop_sequences?: string[];
+  },
+): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+  const res = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: body.model,
+      max_tokens: body.max_tokens ?? 8192,
+      ...(body.system ? { system: body.system } : {}),
+      messages: body.messages,
+      ...(body.temperature != null ? { temperature: body.temperature } : {}),
+      ...(body.stop_sequences?.length ? { stop_sequences: body.stop_sequences } : {}),
+    }),
+  });
+
+  const rawBody = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`[z.ai] API error ${res.status}: ${rawBody}`);
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(rawBody);
+  } catch {
+    throw new Error(`[z.ai] Invalid JSON response: ${rawBody.slice(0, 500)}`);
+  }
+
+  // Debug: log the raw response structure
+  logger.debug(`[z.ai] Response keys: ${Object.keys(data).join(", ")}`);
+  if (data.content) {
+    logger.debug(`[z.ai] content[0]: ${JSON.stringify(data.content?.[0])?.slice(0, 200)}`);
+  } else {
+    logger.info(`[z.ai] Full response (no content field): ${rawBody.slice(0, 500)}`);
+  }
+
+  // Anthropic Messages API response shape:
+  // { content: [{ type: "text", text: "..." }], usage: { input_tokens, output_tokens } }
+  // z.ai may use a different shape — handle both
+  let text = "";
+  if (Array.isArray(data.content)) {
+    text = data.content
+      .filter((b: any) => b.type === "text")
+      .map((b: any) => b.text)
+      .join("");
+  } else if (typeof data.content === "string") {
+    text = data.content;
+  } else if (data.choices?.[0]?.message?.content) {
+    // OpenAI-style response fallback
+    text = data.choices[0].message.content;
+  } else if (data.text) {
+    text = data.text;
+  } else if (data.message) {
+    text = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
+  }
+
+  if (!text) {
+    logger.warn(`[z.ai] Empty text from response: ${rawBody.slice(0, 300)}`);
+  }
+
+  return {
+    text,
+    inputTokens: data.usage?.input_tokens ?? 0,
+    outputTokens: data.usage?.output_tokens ?? 0,
+  };
+}
+
+function createZaiPlugin(): Plugin {
+  const ZAI_BASE_URL = "https://api.z.ai/api/anthropic";
+  // z.ai maps these server-side: sonnet → GLM-4.7, haiku → GLM-4.5-Air
+  // Default both to sonnet (GLM-4.7) — override with ZAI_SMALL_MODEL if needed
+  const ZAI_SMALL = "claude-sonnet-4-20250514";
+  const ZAI_LARGE = "claude-sonnet-4-20250514";
+
+  function env(key: string): string | undefined {
+    const v = process.env[key];
+    return typeof v === "string" && v.length > 0 ? v : undefined;
+  }
+
+  function getSetting(rt: any, key: string): string | undefined {
+    const v = rt.getSetting?.(key);
+    return (typeof v === "string" && v.length > 0 ? v : undefined) ?? env(key);
+  }
+
+  function getKey(rt: any): string { return getSetting(rt, "ZAI_API_KEY") ?? ""; }
+  function getBase(rt: any): string { return getSetting(rt, "ZAI_BASE_URL") ?? ZAI_BASE_URL; }
+  function getSmall(rt: any): string { return getSetting(rt, "ZAI_SMALL_MODEL") ?? ZAI_SMALL; }
+  function getLarge(rt: any): string { return getSetting(rt, "ZAI_LARGE_MODEL") ?? ZAI_LARGE; }
+
+  function emitUsage(rt: any, type: string, inp: number, out: number) {
+    rt.emitEvent(EventType.MODEL_USED, {
+      runtime: rt, source: "zai", type,
+      tokens: { prompt: inp, completion: out, total: inp + out },
+    });
+  }
+
+  async function textGen(rt: any, params: any, model: string, type: string) {
+    logger.info(`[z.ai] ${type} model: ${model}`);
+    const { text, inputTokens, outputTokens } = await zaiMessagesAPI(
+      getBase(rt), getKey(rt),
+      {
+        model,
+        system: rt.character?.system ?? undefined,
+        messages: [{ role: "user", content: params.prompt }],
+        max_tokens: params.maxTokens ?? 8192,
+        temperature: params.temperature ?? 0.7,
+        stop_sequences: params.stopSequences,
+      },
+    );
+    emitUsage(rt, type, inputTokens, outputTokens);
+    return text;
+  }
+
+  async function objGen(rt: any, params: any, model: string, type: string) {
+    logger.info(`[z.ai] ${type} model: ${model}`);
+    const sys = rt.character?.system
+      ? `${rt.character.system}\nYou must respond with valid JSON only. No markdown, no code blocks.`
+      : "You must respond with valid JSON only. No markdown, no code blocks.";
+    const prompt = params.prompt.includes("respond with valid JSON")
+      ? params.prompt
+      : `${params.prompt}\nRespond with valid JSON only.`;
+
+    const { text, inputTokens, outputTokens } = await zaiMessagesAPI(
+      getBase(rt), getKey(rt),
+      { model, system: sys, messages: [{ role: "user", content: prompt }], temperature: params.temperature ?? 0.2 },
+    );
+    emitUsage(rt, type, inputTokens, outputTokens);
+
+    // Parse JSON from response
+    try { const p = JSON.parse(text); if (typeof p === "object" && p) return p; } catch { /* continue */ }
+    const m = text.match(/```json\s*([\s\S]*?)\s*```/);
+    if (m?.[1]) { try { return JSON.parse(m[1].trim()); } catch { /* continue */ } }
+    const ms = text.match(/\{[\s\S]*\}/g);
+    if (ms) {
+      for (const c of [...ms].sort((a, b) => b.length - a.length)) {
+        try { return JSON.parse(c); } catch { /* continue */ }
+      }
+    }
+    throw new Error("[z.ai] Could not parse JSON from model response");
+  }
+
+  return {
+    name: "zai",
+    description: "z.ai GLM Coding Plan (GLM-4.7 / GLM-4.5-Air)",
+    config: {
+      ZAI_API_KEY: env("ZAI_API_KEY") ?? null,
+      ZAI_BASE_URL: env("ZAI_BASE_URL") ?? null,
+      ZAI_SMALL_MODEL: env("ZAI_SMALL_MODEL") ?? null,
+      ZAI_LARGE_MODEL: env("ZAI_LARGE_MODEL") ?? null,
+    },
+    async init(_config: any, rt: any) {
+      const key = getSetting(rt, "ZAI_API_KEY");
+      if (!key) {
+        logger.warn("[z.ai] ZAI_API_KEY not set — z.ai will be limited");
+        return;
+      }
+      logger.info(`[z.ai] Configured → ${getBase(rt)} (large: ${getLarge(rt)}, small: ${getSmall(rt)})`);
+    },
+    models: {
+      [ModelType.TEXT_SMALL]: async (rt: any, p: any) => textGen(rt, p, getSmall(rt), ModelType.TEXT_SMALL),
+      [ModelType.TEXT_LARGE]: async (rt: any, p: any) => textGen(rt, p, getLarge(rt), ModelType.TEXT_LARGE),
+      [ModelType.OBJECT_SMALL]: async (rt: any, p: any) => objGen(rt, p, getSmall(rt), ModelType.OBJECT_SMALL),
+      [ModelType.OBJECT_LARGE]: async (rt: any, p: any) => objGen(rt, p, getLarge(rt), ModelType.OBJECT_LARGE),
+    },
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 /**
  * Resolve Milaidy plugins from config and auto-enable logic.
  * Returns an array of ElizaOS Plugin instances ready for AgentRuntime.
@@ -255,6 +450,13 @@ async function resolvePlugins(config: MilaidyConfig): Promise<ResolvedPlugin[]> 
   // Dynamically import each plugin
   for (const pluginName of pluginsToLoad) {
     try {
+      // z.ai — local plugin (not an npm package)
+      if (pluginName === "__local:plugin-zai") {
+        const zaiPlugin = createZaiPlugin();
+        plugins.push({ name: "plugin-zai", plugin: zaiPlugin });
+        continue;
+      }
+
       const mod = (await import(pluginName)) as PluginModuleShape;
       const pluginInstance = extractPlugin(mod);
 
@@ -792,10 +994,12 @@ async function runFirstTimeSetup(config: MilaidyConfig): Promise<MilaidyConfig> 
     { id: "gemini", label: "Google Gemini", envKey: "GOOGLE_API_KEY", hint: "AI..." },
     { id: "grok", label: "xAI (Grok)", envKey: "XAI_API_KEY", hint: "xai-..." },
     { id: "groq", label: "Groq", envKey: "GROQ_API_KEY", hint: "gsk_..." },
+    { id: "zai", label: "z.ai (GLM Coding Plan)", envKey: "ZAI_API_KEY", hint: "z.ai API key" },
     { id: "deepseek", label: "DeepSeek", envKey: "DEEPSEEK_API_KEY", hint: "sk-..." },
     { id: "mistral", label: "Mistral", envKey: "MISTRAL_API_KEY", hint: "" },
     { id: "together", label: "Together AI", envKey: "TOGETHER_API_KEY", hint: "" },
     { id: "ollama", label: "Ollama (local, free)", envKey: "OLLAMA_BASE_URL", hint: "http://localhost:11434" },
+    { id: "lmstudio", label: "LM Studio (local, free)", envKey: "LMSTUDIO_BASE_URL", hint: "http://localhost:1234" },
   ] as const;
 
   // Detect if any provider key is already configured
@@ -817,7 +1021,7 @@ async function runFirstTimeSetup(config: MilaidyConfig): Promise<MilaidyConfig> 
         ...PROVIDER_OPTIONS.map((p) => ({
           value: p.id,
           label: p.label,
-          hint: p.id === "ollama" ? "no API key needed" : undefined,
+          hint: (p.id === "ollama" || p.id === "lmstudio") ? "no API key needed" : undefined,
         })),
         { value: "_skip_", label: "Skip for now", hint: "set an API key later via env or config" },
       ],
@@ -847,6 +1051,32 @@ async function runFirstTimeSetup(config: MilaidyConfig): Promise<MilaidyConfig> 
           }
 
           providerApiKey = ollamaUrl.trim() || "http://localhost:11434";
+        } else if (chosen.id === "lmstudio") {
+          // LM Studio — local OpenAI-compatible server
+          const lmstudioUrl = await clack.text({
+            message: "LM Studio base URL:",
+            placeholder: "http://localhost:1234",
+            defaultValue: "http://localhost:1234",
+          });
+
+          if (clack.isCancel(lmstudioUrl)) {
+            clack.cancel("Maybe next time!");
+            process.exit(0);
+          }
+
+          providerApiKey = lmstudioUrl.trim() || "http://localhost:1234";
+        } else if (chosen.id === "zai") {
+          // z.ai GLM Coding Plan — uses our forked Anthropic-compatible plugin
+          const apiKeyInput = await clack.password({
+            message: "Paste your z.ai API key:",
+          });
+
+          if (clack.isCancel(apiKeyInput)) {
+            clack.cancel("Maybe next time!");
+            process.exit(0);
+          }
+
+          providerApiKey = apiKeyInput.trim();
         } else {
           const apiKeyInput = await clack.password({
             message: `Paste your ${chosen.label} API key:`,
@@ -887,6 +1117,15 @@ async function runFirstTimeSetup(config: MilaidyConfig): Promise<MilaidyConfig> 
     (updated.env as Record<string, string>)[providerEnvKey] = providerApiKey;
     // Also set immediately in process.env for the current run
     process.env[providerEnvKey] = providerApiKey;
+
+    // LM Studio needs OPENAI_API_KEY + OPENAI_BASE_URL for plugin-openai
+    if (providerEnvKey === "LMSTUDIO_BASE_URL") {
+      const envMap = updated.env as Record<string, string>;
+      envMap.OPENAI_BASE_URL = providerApiKey;
+      envMap.OPENAI_API_KEY = "lm-studio";
+      process.env.OPENAI_BASE_URL = providerApiKey;
+      process.env.OPENAI_API_KEY = "lm-studio";
+    }
   }
 
   saveMilaidyConfig(updated);
