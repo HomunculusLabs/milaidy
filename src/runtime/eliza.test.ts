@@ -6,13 +6,17 @@
  * WITHOUT starting a runtime.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import type { MilaidyConfig } from "./config/config.js";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs/promises";
+import type { MilaidyConfig } from "../config/config.js";
 import {
   collectPluginNames,
   applyChannelSecretsToEnv,
   applyCloudConfigToEnv,
   buildCharacterFromConfig,
   resolvePrimaryModel,
+  resolvePackageEntry,
 } from "./eliza.js";
 
 // ---------------------------------------------------------------------------
@@ -101,6 +105,88 @@ describe("collectPluginNames", () => {
     // But the function should not crash on arbitrary features.
     const config = { features: { someFeature: true, another: { enabled: false } } } as unknown as MilaidyConfig;
     expect(() => collectPluginNames(config)).not.toThrow();
+  });
+
+  // --- plugins.installs (user-installed from registry) ---
+
+  it("includes user-installed plugins from config.plugins.installs", () => {
+    const config = {
+      plugins: {
+        installs: {
+          "@elizaos/plugin-weather": {
+            source: "npm",
+            installPath: "/home/user/.milaidy/plugins/installed/_elizaos_plugin-weather",
+            version: "1.0.0",
+            installedAt: "2026-02-07T00:00:00Z",
+          },
+          "@elizaos/plugin-custom": {
+            source: "npm",
+            installPath: "/home/user/.milaidy/plugins/installed/_elizaos_plugin-custom",
+            version: "2.0.0",
+            installedAt: "2026-02-07T00:00:00Z",
+          },
+        },
+      },
+    } as unknown as MilaidyConfig;
+    const names = collectPluginNames(config);
+    expect(names.has("@elizaos/plugin-weather")).toBe(true);
+    expect(names.has("@elizaos/plugin-custom")).toBe(true);
+  });
+
+  it("includes plugin-plugin-manager in core plugins", () => {
+    const names = collectPluginNames({} as MilaidyConfig);
+    expect(names.has("@elizaos/plugin-plugin-manager")).toBe(true);
+  });
+
+  it("handles empty plugins.installs gracefully", () => {
+    const config = { plugins: { installs: {} } } as unknown as MilaidyConfig;
+    const names = collectPluginNames(config);
+    // Should still have all core plugins, no crash
+    expect(names.has("@elizaos/plugin-sql")).toBe(true);
+  });
+
+  it("handles undefined plugins.installs gracefully", () => {
+    const config = { plugins: {} } as unknown as MilaidyConfig;
+    expect(() => collectPluginNames(config)).not.toThrow();
+  });
+
+  it("handles null install records gracefully", () => {
+    const config = {
+      plugins: {
+        installs: {
+          "@elizaos/plugin-bad": null,
+        },
+      },
+    } as unknown as MilaidyConfig;
+    // null records should be skipped (the typeof check catches this)
+    const names = collectPluginNames(config);
+    expect(names.has("@elizaos/plugin-bad")).toBe(false);
+  });
+
+  it("user-installed plugins coexist with core and channel plugins", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-test";
+    const config = {
+      channels: { discord: { token: "tok" } },
+      plugins: {
+        installs: {
+          "@elizaos/plugin-weather": {
+            source: "npm",
+            installPath: "/tmp/test",
+            version: "1.0.0",
+          },
+        },
+      },
+    } as unknown as MilaidyConfig;
+    const names = collectPluginNames(config);
+    // Core
+    expect(names.has("@elizaos/plugin-sql")).toBe(true);
+    expect(names.has("@elizaos/plugin-plugin-manager")).toBe(true);
+    // Channel
+    expect(names.has("@elizaos/plugin-discord")).toBe(true);
+    // Provider
+    expect(names.has("@elizaos/plugin-anthropic")).toBe(true);
+    // User-installed
+    expect(names.has("@elizaos/plugin-weather")).toBe(true);
   });
 });
 
@@ -314,5 +400,97 @@ describe("resolvePrimaryModel", () => {
   it("returns undefined when model has no primary", () => {
     const config = { agents: { defaults: { model: { fallbacks: ["gpt-5-mini"] } } } } as unknown as MilaidyConfig;
     expect(resolvePrimaryModel(config)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePackageEntry — tests with real directory layout on disk
+// ---------------------------------------------------------------------------
+
+describe("resolvePackageEntry", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "eliza-resolve-test-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("resolves entry from package.json main field", async () => {
+    const pkgRoot = path.join(tmpDir, "plugin-a");
+    await fs.mkdir(path.join(pkgRoot, "dist"), { recursive: true });
+    await fs.writeFile(path.join(pkgRoot, "dist", "index.js"), "export default {}");
+    await fs.writeFile(
+      path.join(pkgRoot, "package.json"),
+      JSON.stringify({ main: "./dist/index.js" }),
+    );
+
+    const entry = await resolvePackageEntry(pkgRoot);
+    expect(entry).toBe(path.resolve(pkgRoot, "./dist/index.js"));
+  });
+
+  it("resolves entry from package.json exports string", async () => {
+    const pkgRoot = path.join(tmpDir, "plugin-b");
+    await fs.mkdir(path.join(pkgRoot, "lib"), { recursive: true });
+    await fs.writeFile(path.join(pkgRoot, "lib", "main.js"), "export default {}");
+    await fs.writeFile(
+      path.join(pkgRoot, "package.json"),
+      JSON.stringify({ exports: "./lib/main.js" }),
+    );
+
+    const entry = await resolvePackageEntry(pkgRoot);
+    expect(entry).toBe(path.resolve(pkgRoot, "./lib/main.js"));
+  });
+
+  it("resolves entry from package.json exports map (dot entry)", async () => {
+    const pkgRoot = path.join(tmpDir, "plugin-c");
+    await fs.mkdir(path.join(pkgRoot, "dist"), { recursive: true });
+    await fs.writeFile(path.join(pkgRoot, "dist", "index.js"), "export default {}");
+    await fs.writeFile(
+      path.join(pkgRoot, "package.json"),
+      JSON.stringify({
+        exports: {
+          ".": { import: "./dist/index.js", default: "./dist/index.js" },
+        },
+      }),
+    );
+
+    const entry = await resolvePackageEntry(pkgRoot);
+    expect(entry).toBe(path.resolve(pkgRoot, "./dist/index.js"));
+  });
+
+  it("resolves entry from exports dot-string shorthand", async () => {
+    const pkgRoot = path.join(tmpDir, "plugin-d");
+    await fs.mkdir(path.join(pkgRoot, "out"), { recursive: true });
+    await fs.writeFile(path.join(pkgRoot, "out", "mod.js"), "export default {}");
+    await fs.writeFile(
+      path.join(pkgRoot, "package.json"),
+      JSON.stringify({ exports: { ".": "./out/mod.js" } }),
+    );
+
+    const entry = await resolvePackageEntry(pkgRoot);
+    expect(entry).toBe(path.resolve(pkgRoot, "./out/mod.js"));
+  });
+
+  it("falls back to dist/index.js when package.json has no main or exports", async () => {
+    const pkgRoot = path.join(tmpDir, "plugin-e");
+    await fs.mkdir(pkgRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(pkgRoot, "package.json"),
+      JSON.stringify({ name: "plugin-e", version: "1.0.0" }),
+    );
+
+    const entry = await resolvePackageEntry(pkgRoot);
+    expect(entry).toBe(path.join(pkgRoot, "dist", "index.js"));
+  });
+
+  it("falls back to dist/index.js when no package.json exists", async () => {
+    const pkgRoot = path.join(tmpDir, "plugin-f");
+    await fs.mkdir(pkgRoot, { recursive: true });
+
+    const entry = await resolvePackageEntry(pkgRoot);
+    expect(entry).toBe(path.join(pkgRoot, "dist", "index.js"));
   });
 });

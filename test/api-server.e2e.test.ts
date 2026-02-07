@@ -19,6 +19,7 @@
 import http from "node:http";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { startApiServer } from "../src/api/server.js";
+import { AGENT_NAME_POOL } from "../src/runtime/onboarding-names.js";
 
 // ---------------------------------------------------------------------------
 // HTTP helper (identical to the one in agent-runtime.e2e.test.ts)
@@ -224,9 +225,12 @@ describe("API Server E2E (no runtime)", () => {
       expect(styles.length).toBeGreaterThan(0);
       expect(providers.length).toBeGreaterThan(0);
 
-      // Verify we get the real presets, not hardcoded test values
-      expect(names).toContain("Reimu");
-      expect(names).toContain("Cirno");
+      // Verify names come from the real preset pool (random subset)
+      for (const name of names) {
+        expect(AGENT_NAME_POOL).toContain(name);
+      }
+      // Ensure names are unique
+      expect(new Set(names).size).toBe(names.length);
     });
   });
 

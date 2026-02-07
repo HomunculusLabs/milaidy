@@ -8,7 +8,7 @@
  *
  * @module benchmark/plugin
  */
-import type { Plugin, Memory } from "@elizaos/core";
+import { logger, type Plugin } from "@elizaos/core";
 
 // ---------------------------------------------------------------------------
 // Benchmark context (module-level shared state, set per-request by the server)
@@ -18,7 +18,7 @@ export interface BenchmarkContext {
   benchmark: string;
   taskId: string;
   goal?: string;
-  observation?: Record<string, unknown>;
+  observation?: Record<string, unknown> | string;
   actionSpace?: string[];
   tools?: Array<Record<string, unknown>>;
   html?: string;
@@ -189,13 +189,17 @@ function formatContextAsText(ctx: BenchmarkContext): string {
     const elemLines = ctx.elements.slice(0, 15).map((el) => {
       const id = el.backend_node_id ?? el.id ?? "?";
       const tag = el.tag ?? "?";
-      const attrs = el.attributes
-        ? Object.entries(el.attributes as Record<string, string>)
-            .slice(0, 5)
-            .map(([k, v]) => `${k}="${v}"`)
-            .join(" ")
-        : "";
-      const text = (el.text_content as string)?.slice(0, 50) ?? "";
+      const attrs =
+        el.attributes && typeof el.attributes === "object"
+          ? Object.entries(el.attributes as Record<string, unknown>)
+              .slice(0, 5)
+              .map(([k, v]) => `${k}="${String(v)}"`)
+              .join(" ")
+          : "";
+      const text =
+        typeof el.text_content === "string"
+          ? el.text_content.slice(0, 50)
+          : "";
       return `[${id}] <${tag} ${attrs}> ${text}`;
     });
     sections.push(`\n## Available Elements\n${elemLines.join("\n")}`);
@@ -360,7 +364,10 @@ export function createBenchmarkPlugin(): Plugin {
                     try {
                       return JSON.parse(params.arguments as string) as Record<string, unknown>;
                     } catch {
-                      return {};
+                      logger.warn(
+                        `[BENCHMARK_ACTION] Failed to parse arguments as JSON: ${params.arguments}`,
+                      );
+                      return { _raw: params.arguments as string };
                     }
                   })()
                 : typeof params.arguments === "object" && params.arguments !== null

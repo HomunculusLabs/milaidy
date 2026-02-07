@@ -175,6 +175,8 @@ export async function loadHooks(
             `[hooks] Registered legacy handler: ${legacyHandler.event} -> ${legacyHandler.module}`,
           );
           result.registered++;
+        } else {
+          result.failed.push(legacyHandler.module);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

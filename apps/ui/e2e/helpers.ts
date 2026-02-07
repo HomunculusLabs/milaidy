@@ -14,6 +14,14 @@ export interface MockApiOptions {
   skillCount?: number;
   logCount?: number;
   extensionRelayReachable?: boolean;
+  /** Wallet addresses for the wallet icon. Null = no wallets configured. */
+  walletAddresses?: { evmAddress: string | null; solanaAddress: string | null } | null;
+  /** Wallet config status. Null = use defaults (no keys set). */
+  walletConfig?: {
+    alchemyKeySet?: boolean;
+    heliusKeySet?: boolean;
+    birdeyeKeySet?: boolean;
+  } | null;
 }
 
 export interface MockPlugin {
@@ -412,6 +420,113 @@ export async function mockApi(page: Page, opts: MockApiOptions = {}): Promise<vo
         relayReachable,
         relayPort: 18792,
         extensionPath: "/Users/test/.milaidy/apps/chrome-extension",
+      }),
+    });
+  });
+
+  // ── Wallet / Inventory mocks ──────────────────────────────────────────
+
+  const defaultWalletAddresses = opts.walletAddresses === null
+    ? { evmAddress: null, solanaAddress: null }
+    : (opts.walletAddresses ?? {
+        evmAddress: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        solanaAddress: "7EcDhSYGxXyscszYEp35KHN8vvw3svAuLKTzXwCFLtV",
+      });
+
+  const walletConfigDefaults = {
+    alchemyKeySet: opts.walletConfig?.alchemyKeySet ?? false,
+    heliusKeySet: opts.walletConfig?.heliusKeySet ?? false,
+    birdeyeKeySet: opts.walletConfig?.birdeyeKeySet ?? false,
+    evmChains: ["Ethereum", "Base", "Arbitrum", "Optimism", "Polygon"],
+    evmAddress: defaultWalletAddresses.evmAddress,
+    solanaAddress: defaultWalletAddresses.solanaAddress,
+  };
+
+  let walletConfigState = { ...walletConfigDefaults };
+
+  await page.route("**/api/wallet/addresses", async (route: Route) => {
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify(defaultWalletAddresses),
+    });
+  });
+
+  await page.route("**/api/wallet/config", async (route: Route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(walletConfigState),
+      });
+    } else if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as Record<string, string>;
+      if (body.ALCHEMY_API_KEY) walletConfigState.alchemyKeySet = true;
+      if (body.HELIUS_API_KEY) walletConfigState.heliusKeySet = true;
+      if (body.BIRDEYE_API_KEY) walletConfigState.birdeyeKeySet = true;
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+    }
+  });
+
+  await page.route("**/api/wallet/balances", async (route: Route) => {
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        evm: walletConfigState.alchemyKeySet ? {
+          address: defaultWalletAddresses.evmAddress,
+          chains: [
+            {
+              chain: "Ethereum", chainId: 1, nativeBalance: "1.5", nativeSymbol: "ETH", nativeValueUsd: "3750.00",
+              tokens: [
+                { symbol: "USDC", name: "USD Coin", contractAddress: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", balance: "500.00", decimals: 6, valueUsd: "500.00", logoUrl: "" },
+                { symbol: "WBTC", name: "Wrapped Bitcoin", contractAddress: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", balance: "0.05", decimals: 8, valueUsd: "4567.89", logoUrl: "" },
+              ],
+            },
+            {
+              chain: "Base", chainId: 8453, nativeBalance: "0.25", nativeSymbol: "ETH", nativeValueUsd: "625.00",
+              tokens: [],
+            },
+          ],
+        } : null,
+        solana: walletConfigState.heliusKeySet ? {
+          address: defaultWalletAddresses.solanaAddress,
+          solBalance: "12.5", solValueUsd: "1234.56",
+          tokens: [
+            { symbol: "USDC", name: "USD Coin", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", balance: "200.00", decimals: 6, valueUsd: "200.00", logoUrl: "" },
+          ],
+        } : null,
+      }),
+    });
+  });
+
+  await page.route("**/api/wallet/nfts", async (route: Route) => {
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        evm: walletConfigState.alchemyKeySet ? [
+          {
+            chain: "Ethereum",
+            nfts: [
+              { contractAddress: "0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d", tokenId: "1234", name: "Bored Ape #1234", description: "A bored ape", imageUrl: "https://placehold.co/200x200?text=BAYC", collectionName: "Bored Ape Yacht Club", tokenType: "ERC721" },
+            ],
+          },
+        ] : [],
+        solana: walletConfigState.heliusKeySet ? {
+          nfts: [
+            { mint: "DRiP1234", name: "DRiP Drop #42", description: "A DRiP NFT", imageUrl: "https://placehold.co/200x200?text=DRiP", collectionName: "DRiP" },
+          ],
+        } : null,
+      }),
+    });
+  });
+
+  await page.route("**/api/wallet/export", async (route: Route) => {
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        evm: { privateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", address: defaultWalletAddresses.evmAddress },
+        solana: { privateKey: "4wBqpZM9xaSheZzJSMYGnGbUXDPSgWaC1LDUQ27gFdFtGm5qAshpcPMTgjLZ6Y7yDw3p6752kQhBEkZ1bPYoY8h", address: defaultWalletAddresses.solanaAddress },
       }),
     });
   });

@@ -12,6 +12,7 @@ coverage
 **/*.bun-build
 
 # Lock files (managed at repo root)
+package-lock.json
 pnpm-lock.yaml
 bun.lock
 bun.lockb

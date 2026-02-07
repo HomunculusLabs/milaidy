@@ -16,6 +16,11 @@ import {
   type LogEntry,
   type OnboardingOptions,
   type ExtensionStatus,
+  type WalletAddresses,
+  type WalletBalancesResponse,
+  type WalletNftsResponse,
+  type WalletConfigStatus,
+  type WalletExportResult,
 } from "./api-client.js";
 import { tabFromPath, pathForTab, type Tab, TAB_GROUPS, titleForTab } from "./navigation.js";
 
@@ -40,6 +45,18 @@ export class MilaidyApp extends LitElement {
   // Chrome extension state
   @state() extensionStatus: ExtensionStatus | null = null;
   @state() extensionChecking = false;
+
+  // Wallet / Inventory state
+  @state() walletAddresses: WalletAddresses | null = null;
+  @state() walletConfig: WalletConfigStatus | null = null;
+  @state() walletBalances: WalletBalancesResponse | null = null;
+  @state() walletNfts: WalletNftsResponse | null = null;
+  @state() walletLoading = false;
+  @state() walletNftsLoading = false;
+  @state() inventoryView: "tokens" | "nfts" = "tokens";
+  @state() walletExportData: WalletExportResult | null = null;
+  @state() walletExportVisible = false;
+  @state() walletApiKeySaving = false;
 
   // Onboarding wizard state
   @state() onboardingStep = 0;
@@ -120,6 +137,265 @@ export class MilaidyApp extends LitElement {
     .lifecycle-btn:hover {
       border-color: var(--accent);
       color: var(--accent);
+    }
+
+    /* Wallet icon */
+    .wallet-wrapper {
+      position: relative;
+      display: inline-flex;
+    }
+
+    .wallet-btn {
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .wallet-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .wallet-tooltip {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 6px;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      z-index: 100;
+      min-width: 280px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    }
+
+    .wallet-wrapper:hover .wallet-tooltip {
+      display: block;
+    }
+
+    .wallet-addr-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      padding: 4px 0;
+    }
+
+    .wallet-addr-row + .wallet-addr-row {
+      border-top: 1px solid var(--border);
+    }
+
+    .chain-label {
+      font-weight: bold;
+      font-size: 11px;
+      min-width: 30px;
+      font-family: var(--mono);
+    }
+
+    .wallet-addr-row code {
+      font-size: 11px;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: var(--mono);
+    }
+
+    .copy-btn {
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      cursor: pointer;
+      font-size: 10px;
+      font-family: var(--mono);
+    }
+
+    .copy-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* Inventory */
+    .inventory-subtab {
+      display: inline-block;
+      padding: 4px 16px;
+      margin-right: 4px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      font-size: 13px;
+      font-family: var(--mono);
+    }
+
+    .inventory-subtab.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: bold;
+    }
+
+    .inventory-subtab:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .chain-section {
+      margin-top: 16px;
+      border: 1px solid var(--border);
+      background: var(--card);
+    }
+
+    .chain-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-weight: bold;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .token-row {
+      display: flex;
+      align-items: center;
+      padding: 8px 14px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .token-row:last-child {
+      border-bottom: none;
+    }
+
+    .token-symbol {
+      font-weight: bold;
+      font-family: var(--mono);
+      min-width: 80px;
+    }
+
+    .token-name {
+      color: var(--muted);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .token-balance {
+      font-family: var(--mono);
+      text-align: right;
+      min-width: 120px;
+    }
+
+    .token-value {
+      font-family: var(--mono);
+      color: var(--muted);
+      text-align: right;
+      min-width: 80px;
+      margin-left: 12px;
+    }
+
+    .nft-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .nft-card {
+      border: 1px solid var(--border);
+      background: var(--card);
+      overflow: hidden;
+    }
+
+    .nft-card img {
+      width: 100%;
+      height: 160px;
+      object-fit: cover;
+      display: block;
+      background: var(--bg-muted);
+    }
+
+    .nft-card .nft-info {
+      padding: 8px 10px;
+    }
+
+    .nft-card .nft-name {
+      font-size: 12px;
+      font-weight: bold;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nft-card .nft-collection {
+      font-size: 11px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .setup-card {
+      border: 1px solid var(--border);
+      background: var(--card);
+      padding: 20px;
+      margin-top: 16px;
+    }
+
+    .setup-card h3 {
+      margin: 0 0 8px 0;
+      font-size: 15px;
+    }
+
+    .setup-card p {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 12px 0;
+      line-height: 1.5;
+    }
+
+    .setup-card ol {
+      margin: 0 0 14px 0;
+      padding-left: 20px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .setup-card a {
+      color: var(--accent);
+    }
+
+    .setup-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .setup-input-row input {
+      flex: 1;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      font-size: 12px;
+      font-family: var(--mono);
+    }
+
+    .key-export-box {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--danger, #e74c3c);
+      background: var(--bg-muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      word-break: break-all;
+      line-height: 1.6;
     }
 
     /* Navigation */
@@ -560,9 +836,23 @@ export class MilaidyApp extends LitElement {
       this.connected = false;
     }
 
-    // Load tab from URL
+    // Load wallet addresses for the header icon
+    try {
+      this.walletAddresses = await client.getWalletAddresses();
+    } catch {
+      // Wallet may not be configured yet
+    }
+
+    // Load tab from URL and trigger data loading for it
     const tab = tabFromPath(window.location.pathname);
-    if (tab) this.tab = tab;
+    if (tab) {
+      this.tab = tab;
+      if (tab === "inventory") this.loadInventory();
+      if (tab === "plugins") this.loadPlugins();
+      if (tab === "skills") this.loadSkills();
+      if (tab === "config") { this.checkExtensionStatus(); this.loadWalletConfig(); }
+      if (tab === "logs") this.loadLogs();
+    }
   }
 
   private setTab(tab: Tab): void {
@@ -571,9 +861,10 @@ export class MilaidyApp extends LitElement {
     window.history.pushState(null, "", path);
 
     // Load data for the tab
+    if (tab === "inventory") this.loadInventory();
     if (tab === "plugins") this.loadPlugins();
     if (tab === "skills") this.loadSkills();
-    if (tab === "config") this.checkExtensionStatus();
+    if (tab === "config") { this.checkExtensionStatus(); this.loadWalletConfig(); }
     if (tab === "logs") this.loadLogs();
   }
 
@@ -638,6 +929,33 @@ export class MilaidyApp extends LitElement {
           this.agentStatus = await client.getStatus();
         } catch { /* ignore */ }
       }, 3000);
+    }
+  }
+
+  private async handleExportKeys(): Promise<void> {
+    if (this.walletExportVisible) {
+      this.walletExportVisible = false;
+      this.walletExportData = null;
+      return;
+    }
+    const confirmed = window.confirm(
+      "This will reveal your private keys.\n\n" +
+      "NEVER share your private keys with anyone.\n" +
+      "Anyone with your private keys can steal all funds in your wallets.\n\n" +
+      "Continue?",
+    );
+    if (!confirmed) return;
+
+    try {
+      this.walletExportData = await client.exportWalletKeys();
+      this.walletExportVisible = true;
+      // Auto-hide after 60 seconds for security
+      setTimeout(() => {
+        this.walletExportVisible = false;
+        this.walletExportData = null;
+      }, 60_000);
+    } catch {
+      // ignore
     }
   }
 
@@ -831,7 +1149,10 @@ export class MilaidyApp extends LitElement {
 
     return html`
       <header>
-        <span class="logo">${name}</span>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span class="logo">${name}</span>
+          ${this.renderWalletIcon()}
+        </div>
         <div class="status-bar">
           <span class="status-pill ${state}">${state}</span>
           ${state === "not_started" || state === "stopped"
@@ -848,6 +1169,63 @@ export class MilaidyApp extends LitElement {
         </div>
       </header>
     `;
+  }
+
+  private renderWalletIcon() {
+    const w = this.walletAddresses;
+    if (!w || (!w.evmAddress && !w.solanaAddress)) return html``;
+
+    const evmShort = w.evmAddress
+      ? `${w.evmAddress.slice(0, 6)}...${w.evmAddress.slice(-4)}`
+      : null;
+    const solShort = w.solanaAddress
+      ? `${w.solanaAddress.slice(0, 4)}...${w.solanaAddress.slice(-4)}`
+      : null;
+
+    return html`
+      <div class="wallet-wrapper">
+        <button class="wallet-btn" @click=${() => this.setTab("inventory")}
+                title="View Inventory">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/>
+            <path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/>
+            <path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>
+          </svg>
+        </button>
+        <div class="wallet-tooltip">
+          ${evmShort ? html`
+            <div class="wallet-addr-row">
+              <span class="chain-label">EVM</span>
+              <code>${evmShort}</code>
+              <button class="copy-btn" @click=${(e: Event) => { e.stopPropagation(); this.copyToClipboard(w.evmAddress!); }}>copy</button>
+            </div>
+          ` : ""}
+          ${solShort ? html`
+            <div class="wallet-addr-row">
+              <span class="chain-label">SOL</span>
+              <code>${solShort}</code>
+              <button class="copy-btn" @click=${(e: Event) => { e.stopPropagation(); this.copyToClipboard(w.solanaAddress!); }}>copy</button>
+            </div>
+          ` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  private async copyToClipboard(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Fallback for older browsers
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
   }
 
   private renderNav() {
@@ -876,6 +1254,7 @@ export class MilaidyApp extends LitElement {
   private renderView() {
     switch (this.tab) {
       case "chat": return this.renderChat();
+      case "inventory": return this.renderInventory();
       case "plugins": return this.renderPlugins();
       case "skills": return this.renderSkills();
       case "config": return this.renderConfig();
@@ -1160,6 +1539,315 @@ export class MilaidyApp extends LitElement {
     window.open("chrome://extensions", "_blank");
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // Inventory
+  // ═══════════════════════════════════════════════════════════════════════
+
+  private async loadInventory(): Promise<void> {
+    // Always load config first to know key status
+    await this.loadWalletConfig();
+    if (!this.walletConfig?.alchemyKeySet && !this.walletConfig?.heliusKeySet) return;
+    this.loadBalances();
+  }
+
+  private async loadWalletConfig(): Promise<void> {
+    try {
+      this.walletConfig = await client.getWalletConfig();
+    } catch { /* ignore */ }
+  }
+
+  private async loadBalances(): Promise<void> {
+    this.walletLoading = true;
+    try {
+      this.walletBalances = await client.getWalletBalances();
+    } catch { /* ignore */ }
+    this.walletLoading = false;
+  }
+
+  private async loadNfts(): Promise<void> {
+    this.walletNftsLoading = true;
+    try {
+      this.walletNfts = await client.getWalletNfts();
+    } catch { /* ignore */ }
+    this.walletNftsLoading = false;
+  }
+
+  private async handleWalletApiKeySave(): Promise<void> {
+    this.walletApiKeySaving = true;
+    const inputs = this.shadowRoot?.querySelectorAll<HTMLInputElement>("[data-wallet-config]") ?? [];
+    const config: Record<string, string> = {};
+    for (const input of inputs) {
+      const key = input.dataset.walletConfig;
+      if (key && input.value.trim()) {
+        config[key] = input.value.trim();
+      }
+    }
+    if (Object.keys(config).length > 0) {
+      try {
+        await client.updateWalletConfig(config);
+        await this.loadWalletConfig();
+        // Clear inputs after save
+        for (const input of inputs) input.value = "";
+        // Reload balances now that keys are set
+        this.loadBalances();
+      } catch { /* ignore */ }
+    }
+    this.walletApiKeySaving = false;
+  }
+
+  private renderInventory() {
+    const cfg = this.walletConfig;
+    const needsSetup = !cfg || (!cfg.alchemyKeySet && !cfg.heliusKeySet);
+
+    return html`
+      <h2>Inventory</h2>
+      <p class="subtitle">Tokens and NFTs across all your wallets.</p>
+
+      ${needsSetup ? this.renderInventorySetup() : this.renderInventoryContent()}
+    `;
+  }
+
+  private renderInventorySetup() {
+    const cfg = this.walletConfig;
+    return html`
+      <div style="margin-top:16px;">
+        <p style="font-size:13px;line-height:1.6;">
+          To view your balances, you need API keys from blockchain data providers.
+          These are free to create and take about a minute to set up.
+        </p>
+
+        <!-- Alchemy setup -->
+        <div class="setup-card">
+          <h3>Alchemy ${cfg?.alchemyKeySet ? html`<span style="color:var(--ok);font-size:12px;font-weight:normal;margin-left:8px;">configured</span>` : ""}</h3>
+          <p>Alchemy provides EVM chain data (Ethereum, Base, Arbitrum, Optimism, Polygon).</p>
+          <ol>
+            <li>Go to <a href="https://dashboard.alchemy.com/signup" target="_blank" rel="noopener">dashboard.alchemy.com</a> and create a free account</li>
+            <li>In your dashboard, click <strong>"Create new app"</strong></li>
+            <li>Copy the <strong>API Key</strong> from your app settings</li>
+            <li>Paste it below</li>
+          </ol>
+          <div class="setup-input-row">
+            <input type="password" data-wallet-config="ALCHEMY_API_KEY"
+                   placeholder="${cfg?.alchemyKeySet ? "Already set — leave blank to keep" : "Paste your Alchemy API key"}" />
+          </div>
+        </div>
+
+        <!-- Helius setup -->
+        <div class="setup-card">
+          <h3>Helius ${cfg?.heliusKeySet ? html`<span style="color:var(--ok);font-size:12px;font-weight:normal;margin-left:8px;">configured</span>` : ""}</h3>
+          <p>Helius provides Solana chain data (tokens, NFTs, enhanced RPC).</p>
+          <ol>
+            <li>Go to <a href="https://dev.helius.xyz/dashboard/app" target="_blank" rel="noopener">dev.helius.xyz</a> and create a free account</li>
+            <li>You'll get an API key on your dashboard immediately</li>
+            <li>Copy the <strong>API Key</strong></li>
+            <li>Paste it below</li>
+          </ol>
+          <div class="setup-input-row">
+            <input type="password" data-wallet-config="HELIUS_API_KEY"
+                   placeholder="${cfg?.heliusKeySet ? "Already set — leave blank to keep" : "Paste your Helius API key"}" />
+          </div>
+        </div>
+
+        <!-- Birdeye setup (optional) -->
+        <div class="setup-card">
+          <h3>Birdeye <span style="color:var(--muted);font-size:11px;font-weight:normal;margin-left:8px;">optional</span>
+            ${cfg?.birdeyeKeySet ? html`<span style="color:var(--ok);font-size:12px;font-weight:normal;margin-left:8px;">configured</span>` : ""}
+          </h3>
+          <p>Birdeye provides USD price data for Solana tokens. Optional but recommended.</p>
+          <ol>
+            <li>Go to <a href="https://birdeye.so/user/api-management" target="_blank" rel="noopener">birdeye.so</a> and create a free account</li>
+            <li>Navigate to the <strong>API</strong> section in your profile</li>
+            <li>Copy your API key</li>
+          </ol>
+          <div class="setup-input-row">
+            <input type="password" data-wallet-config="BIRDEYE_API_KEY"
+                   placeholder="${cfg?.birdeyeKeySet ? "Already set — leave blank to keep" : "Paste your Birdeye API key (optional)"}" />
+          </div>
+        </div>
+
+        <div style="margin-top:16px;">
+          <button class="btn" @click=${() => this.handleWalletApiKeySave()}
+                  ?disabled=${this.walletApiKeySaving}
+                  style="padding:8px 24px;">
+            ${this.walletApiKeySaving ? "Saving..." : "Save API Keys"}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderInventoryContent() {
+    return html`
+      <div style="margin-top:12px;display:flex;align-items:center;gap:8px;">
+        <button class="inventory-subtab ${this.inventoryView === "tokens" ? "active" : ""}"
+                @click=${() => { this.inventoryView = "tokens"; if (!this.walletBalances) this.loadBalances(); }}>
+          Tokens
+        </button>
+        <button class="inventory-subtab ${this.inventoryView === "nfts" ? "active" : ""}"
+                @click=${() => { this.inventoryView = "nfts"; if (!this.walletNfts) this.loadNfts(); }}>
+          NFTs
+        </button>
+        <button class="btn" style="margin-left:auto;font-size:11px;padding:4px 12px;"
+                @click=${() => this.inventoryView === "tokens" ? this.loadBalances() : this.loadNfts()}>
+          Refresh
+        </button>
+      </div>
+
+      ${this.inventoryView === "tokens" ? this.renderTokensView() : this.renderNftsView()}
+    `;
+  }
+
+  private renderTokensView() {
+    if (this.walletLoading) {
+      return html`<div class="empty-state" style="margin-top:24px;">Loading balances...</div>`;
+    }
+    if (!this.walletBalances) {
+      return html`<div class="empty-state" style="margin-top:24px;">No balance data yet. Click Refresh.</div>`;
+    }
+
+    const b = this.walletBalances;
+    return html`
+      ${b.evm ? html`
+        <div style="margin-top:20px;">
+          <div style="font-size:13px;font-weight:bold;margin-bottom:4px;">EVM Wallet</div>
+          <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:12px;">${b.evm.address}</div>
+
+          ${b.evm.chains.map((chain) => html`
+            <div class="chain-section">
+              <div class="chain-header">${chain.chain}</div>
+              <div class="token-row">
+                <span class="token-symbol">${chain.nativeSymbol}</span>
+                <span class="token-name">Native</span>
+                <span class="token-balance">${this.formatBalance(chain.nativeBalance)}</span>
+                <span class="token-value">${chain.nativeValueUsd !== "0" ? `$${chain.nativeValueUsd}` : ""}</span>
+              </div>
+              ${chain.tokens.map((token) => html`
+                <div class="token-row">
+                  <span class="token-symbol">${token.symbol}</span>
+                  <span class="token-name">${token.name}</span>
+                  <span class="token-balance">${this.formatBalance(token.balance)}</span>
+                  <span class="token-value">${token.valueUsd !== "0" ? `$${token.valueUsd}` : ""}</span>
+                </div>
+              `)}
+              ${chain.tokens.length === 0 ? html`
+                <div class="token-row" style="color:var(--muted);font-style:italic;">No ERC-20 tokens</div>
+              ` : ""}
+            </div>
+          `)}
+        </div>
+      ` : ""}
+
+      ${b.solana ? html`
+        <div style="margin-top:24px;">
+          <div style="font-size:13px;font-weight:bold;margin-bottom:4px;">Solana Wallet</div>
+          <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:12px;">${b.solana.address}</div>
+
+          <div class="chain-section">
+            <div class="chain-header">Solana</div>
+            <div class="token-row">
+              <span class="token-symbol">SOL</span>
+              <span class="token-name">Native</span>
+              <span class="token-balance">${this.formatBalance(b.solana.solBalance)}</span>
+              <span class="token-value">${b.solana.solValueUsd !== "0" ? `$${b.solana.solValueUsd}` : ""}</span>
+            </div>
+            ${b.solana.tokens.map((token) => html`
+              <div class="token-row">
+                <span class="token-symbol">${token.symbol}</span>
+                <span class="token-name">${token.name}</span>
+                <span class="token-balance">${this.formatBalance(token.balance)}</span>
+                <span class="token-value">${token.valueUsd !== "0" ? `$${token.valueUsd}` : ""}</span>
+              </div>
+            `)}
+            ${b.solana.tokens.length === 0 ? html`
+              <div class="token-row" style="color:var(--muted);font-style:italic;">No SPL tokens</div>
+            ` : ""}
+          </div>
+        </div>
+      ` : ""}
+
+      ${!b.evm && !b.solana ? html`
+        <div class="empty-state" style="margin-top:24px;">
+          No wallet data available. Make sure API keys are configured in
+          <a href="/config" @click=${(e: Event) => { e.preventDefault(); this.setTab("config"); }}>Config</a>.
+        </div>
+      ` : ""}
+    `;
+  }
+
+  private renderNftsView() {
+    if (this.walletNftsLoading) {
+      return html`<div class="empty-state" style="margin-top:24px;">Loading NFTs...</div>`;
+    }
+    if (!this.walletNfts) {
+      return html`<div class="empty-state" style="margin-top:24px;">No NFT data yet. Click Refresh.</div>`;
+    }
+
+    const n = this.walletNfts;
+    const evmNfts = n.evm.filter((c) => c.nfts.length > 0);
+    const solanaNfts = n.solana?.nfts ?? [];
+    const totalNfts = evmNfts.reduce((sum, c) => sum + c.nfts.length, 0) + solanaNfts.length;
+
+    if (totalNfts === 0) {
+      return html`<div class="empty-state" style="margin-top:24px;">No NFTs found across your wallets.</div>`;
+    }
+
+    return html`
+      ${evmNfts.map((chainData) => html`
+        <div style="margin-top:20px;">
+          <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">${chainData.chain}</div>
+          <div class="nft-grid">
+            ${chainData.nfts.map((nft) => html`
+              <div class="nft-card">
+                ${nft.imageUrl
+                  ? html`<img src="${nft.imageUrl}" alt="${nft.name}" loading="lazy" />`
+                  : html`<div style="width:100%;height:160px;background:var(--bg-muted);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);">No image</div>`
+                }
+                <div class="nft-info">
+                  <div class="nft-name">${nft.name}</div>
+                  <div class="nft-collection">${nft.collectionName || nft.tokenType}</div>
+                </div>
+              </div>
+            `)}
+          </div>
+        </div>
+      `)}
+
+      ${solanaNfts.length > 0 ? html`
+        <div style="margin-top:20px;">
+          <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">Solana</div>
+          <div class="nft-grid">
+            ${solanaNfts.map((nft) => html`
+              <div class="nft-card">
+                ${nft.imageUrl
+                  ? html`<img src="${nft.imageUrl}" alt="${nft.name}" loading="lazy" />`
+                  : html`<div style="width:100%;height:160px;background:var(--bg-muted);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);">No image</div>`
+                }
+                <div class="nft-info">
+                  <div class="nft-name">${nft.name}</div>
+                  <div class="nft-collection">${nft.collectionName}</div>
+                </div>
+              </div>
+            `)}
+          </div>
+        </div>
+      ` : ""}
+    `;
+  }
+
+  private formatBalance(balance: string): string {
+    const num = Number.parseFloat(balance);
+    if (Number.isNaN(num)) return balance;
+    if (num === 0) return "0";
+    if (num < 0.0001) return "<0.0001";
+    if (num < 1) return num.toFixed(6);
+    if (num < 1000) return num.toFixed(4);
+    return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Config
+  // ═══════════════════════════════════════════════════════════════════════
+
   private renderConfig() {
     const ext = this.extensionStatus;
     const relayOk = ext?.relayReachable === true;
@@ -1247,9 +1935,97 @@ export class MilaidyApp extends LitElement {
           : ""}
       </div>
 
+      <!-- Wallet API Keys Section -->
+      <div style="margin-top:24px;padding:16px;border:1px solid var(--border);background:var(--card);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div>
+            <div style="font-weight:bold;font-size:14px;">Wallet API Keys</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px;">
+              Configure API keys for blockchain data providers (balance and NFT fetching).
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div style="display:flex;flex-direction:column;gap:2px;font-size:12px;">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <code style="font-size:11px;font-weight:600;">ALCHEMY_API_KEY</code>
+              ${this.walletConfig?.alchemyKeySet ? html`<span style="font-size:10px;color:var(--ok);">set</span>` : html`<span style="font-size:10px;color:var(--muted);">not set</span>`}
+            </div>
+            <div style="color:var(--muted);font-size:11px;">EVM chain data — <a href="https://dashboard.alchemy.com/" target="_blank" rel="noopener" style="color:var(--accent);">Get key</a></div>
+            <input type="password" data-wallet-config="ALCHEMY_API_KEY"
+                   placeholder="${this.walletConfig?.alchemyKeySet ? "Already set — leave blank to keep" : "Enter Alchemy API key"}"
+                   style="padding:4px 8px;border:1px solid var(--border);background:var(--card);font-size:12px;font-family:var(--mono);" />
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px;font-size:12px;">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <code style="font-size:11px;font-weight:600;">HELIUS_API_KEY</code>
+              ${this.walletConfig?.heliusKeySet ? html`<span style="font-size:10px;color:var(--ok);">set</span>` : html`<span style="font-size:10px;color:var(--muted);">not set</span>`}
+            </div>
+            <div style="color:var(--muted);font-size:11px;">Solana chain data — <a href="https://dev.helius.xyz/" target="_blank" rel="noopener" style="color:var(--accent);">Get key</a></div>
+            <input type="password" data-wallet-config="HELIUS_API_KEY"
+                   placeholder="${this.walletConfig?.heliusKeySet ? "Already set — leave blank to keep" : "Enter Helius API key"}"
+                   style="padding:4px 8px;border:1px solid var(--border);background:var(--card);font-size:12px;font-family:var(--mono);" />
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px;font-size:12px;">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <code style="font-size:11px;font-weight:600;">BIRDEYE_API_KEY</code>
+              <span style="font-size:10px;color:var(--muted);">optional</span>
+              ${this.walletConfig?.birdeyeKeySet ? html`<span style="font-size:10px;color:var(--ok);">set</span>` : ""}
+            </div>
+            <div style="color:var(--muted);font-size:11px;">Solana price data — <a href="https://birdeye.so/" target="_blank" rel="noopener" style="color:var(--accent);">Get key</a></div>
+            <input type="password" data-wallet-config="BIRDEYE_API_KEY"
+                   placeholder="${this.walletConfig?.birdeyeKeySet ? "Already set — leave blank to keep" : "Enter Birdeye API key (optional)"}"
+                   style="padding:4px 8px;border:1px solid var(--border);background:var(--card);font-size:12px;font-family:var(--mono);" />
+          </div>
+          <button class="btn" @click=${() => this.handleWalletApiKeySave()}
+                  ?disabled=${this.walletApiKeySaving}
+                  style="align-self:flex-end;font-size:11px;padding:4px 14px;margin-top:4px;">
+            ${this.walletApiKeySaving ? "Saving..." : "Save API Keys"}
+          </button>
+        </div>
+      </div>
+
       <div style="margin-top:48px;padding-top:24px;border-top:1px solid var(--border);">
         <h2 style="color:var(--danger, #e74c3c);">Danger Zone</h2>
         <p class="subtitle">Irreversible actions. Proceed with caution.</p>
+
+        <!-- Export Private Keys -->
+        <div style="border:1px solid var(--danger, #e74c3c);padding:16px;margin-bottom:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-weight:bold;font-size:14px;">Export Private Keys</div>
+              <div style="font-size:12px;color:var(--muted);margin-top:2px;">Reveal your EVM and Solana private keys. Never share these with anyone.</div>
+            </div>
+            <button
+              class="btn"
+              style="background:var(--danger, #e74c3c);border-color:var(--danger, #e74c3c);white-space:nowrap;margin-top:0;"
+              @click=${() => this.handleExportKeys()}
+            >${this.walletExportVisible ? "Hide Keys" : "Export Keys"}</button>
+          </div>
+          ${this.walletExportVisible && this.walletExportData ? html`
+            <div class="key-export-box">
+              ${this.walletExportData.evm ? html`
+                <div style="margin-bottom:8px;">
+                  <strong>EVM Private Key</strong> <span style="color:var(--muted);">(${this.walletExportData.evm.address})</span><br/>
+                  <span>${this.walletExportData.evm.privateKey}</span>
+                  <button class="copy-btn" style="margin-left:8px;" @click=${() => this.copyToClipboard(this.walletExportData!.evm!.privateKey)}>copy</button>
+                </div>
+              ` : ""}
+              ${this.walletExportData.solana ? html`
+                <div>
+                  <strong>Solana Private Key</strong> <span style="color:var(--muted);">(${this.walletExportData.solana.address})</span><br/>
+                  <span>${this.walletExportData.solana.privateKey}</span>
+                  <button class="copy-btn" style="margin-left:8px;" @click=${() => this.copyToClipboard(this.walletExportData!.solana!.privateKey)}>copy</button>
+                </div>
+              ` : ""}
+              ${!this.walletExportData.evm && !this.walletExportData.solana ? html`
+                <div style="color:var(--muted);">No wallet keys configured.</div>
+              ` : ""}
+            </div>
+          ` : ""}
+        </div>
+
+        <!-- Reset Agent -->
         <div style="border:1px solid var(--danger, #e74c3c);padding:16px;display:flex;justify-content:space-between;align-items:center;">
           <div>
             <div style="font-weight:bold;font-size:14px;">Reset Agent</div>
@@ -1335,7 +2111,7 @@ export class MilaidyApp extends LitElement {
 
   private renderOnboardingWelcome() {
     return html`
-      <img class="onboarding-avatar" src="/pfp.png" alt="milAIdy" />
+      <img class="onboarding-avatar" src="/pfp.jpg" alt="milAIdy" />
       <h1 class="onboarding-welcome-title">Welcome to milAIdy!</h1>
       <p class="onboarding-welcome-sub">The agent of choice for network spiritualists</p>
       <button class="btn" @click=${this.handleOnboardingNext}>Continue</button>
@@ -1344,7 +2120,7 @@ export class MilaidyApp extends LitElement {
 
   private renderOnboardingName(opts: OnboardingOptions) {
     return html`
-      <img class="onboarding-avatar" src="/pfp.png" alt="milAIdy" style="width:100px;height:100px;" />
+      <img class="onboarding-avatar" src="/pfp.jpg" alt="milAIdy" style="width:100px;height:100px;" />
       <div class="onboarding-speech">errr, what was my name again...?</div>
       <div class="onboarding-options">
         ${opts.names.map(
@@ -1394,7 +2170,7 @@ export class MilaidyApp extends LitElement {
 
   private renderOnboardingStyle(opts: OnboardingOptions) {
     return html`
-      <img class="onboarding-avatar" src="/pfp.png" alt="milAIdy" style="width:100px;height:100px;" />
+      <img class="onboarding-avatar" src="/pfp.jpg" alt="milAIdy" style="width:100px;height:100px;" />
       <div class="onboarding-speech">so what's the vibe here?</div>
       <div class="onboarding-options">
         ${opts.styles.map(
@@ -1422,7 +2198,7 @@ export class MilaidyApp extends LitElement {
     const needsKey = selected && selected.envKey && selected.id !== "elizacloud" && selected.id !== "ollama";
 
     return html`
-      <img class="onboarding-avatar" src="/pfp.png" alt="milAIdy" style="width:100px;height:100px;" />
+      <img class="onboarding-avatar" src="/pfp.jpg" alt="milAIdy" style="width:100px;height:100px;" />
       <div class="onboarding-speech">which AI provider do you want to use?</div>
       <div class="onboarding-options">
         ${opts.providers.map(

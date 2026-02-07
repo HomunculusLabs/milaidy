@@ -1,5 +1,5 @@
 {
-  "appId": "ai.milaidy.app",
+  "appId": "com.miladyai.milaidy",
   "productName": "Milaidy",
   "directories": {
     "buildResources": "resources"
@@ -11,7 +11,9 @@
     "app/**/*"
   ],
   "publish": {
-    "provider": "github"
+    "provider": "github",
+    "owner": "milady-ai",
+    "repo": "milaidy"
   },
   "nsis": {
     "allowElevation": true,
@@ -20,12 +22,26 @@
   },
   "win": {
     "target": "nsis",
-    "icon": "assets/appIcon.ico"
+    "icon": "assets/appIcon.ico",
+    "signingHashAlgorithms": ["sha256"],
+    "azureSignOptions": {
+      "publisherName": "Milady AI",
+      "endpoint": "https://eus.codesigning.azure.net/",
+      "certificateProfileName": "milaidy-code-sign",
+      "codeSigningAccountName": "milaidy"
+    }
   },
   "mac": {
     "category": "public.app-category.productivity",
-    "target": "dmg",
-    "icon": "assets/appIcon.png"
+    "target": ["dmg", "zip"],
+    "icon": "assets/appIcon.png",
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "entitlements.mac.plist",
+    "entitlementsInherit": "entitlements.mac.plist"
+  },
+  "dmg": {
+    "sign": false
   },
   "linux": {
     "target": [

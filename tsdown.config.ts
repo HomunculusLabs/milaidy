@@ -18,7 +18,7 @@ export default defineConfig([
     platform: "node",
   },
   {
-    entry: "src/eliza.ts",
+    entry: "src/runtime/eliza.ts",
     env,
     fixedExtension: false,
     platform: "node",

@@ -131,24 +131,17 @@ export function applyPluginAutoEnable(
   const changes: string[] = [];
   const updatedConfig = structuredClone(config) as MilaidyConfig;
 
-  if (
-    updatedConfig.plugins &&
-    typeof updatedConfig.plugins === "object" &&
-    (updatedConfig.plugins as Record<string, unknown>).enabled === false
-  ) {
+  if (updatedConfig.plugins?.enabled === false) {
     return { config: updatedConfig, changes };
   }
 
   updatedConfig.plugins = updatedConfig.plugins ?? {};
-  const pluginsConfig = updatedConfig.plugins as {
-    allow?: string[];
-    entries?: Record<string, { enabled?: boolean }>;
-  };
+  const pluginsConfig = updatedConfig.plugins;
   pluginsConfig.allow = pluginsConfig.allow ?? [];
   pluginsConfig.entries = pluginsConfig.entries ?? {};
 
   // Channels
-  if (updatedConfig.channels && typeof updatedConfig.channels === "object") {
+  if (updatedConfig.channels) {
     for (const [channelName, channelConfig] of Object.entries(updatedConfig.channels)) {
       const pluginName = CHANNEL_PLUGINS[channelName];
       if (!pluginName) continue;
@@ -159,9 +152,8 @@ export function applyPluginAutoEnable(
   }
 
   // Auth profiles
-  if (updatedConfig.auth && typeof updatedConfig.auth === "object" && (updatedConfig.auth as Record<string, unknown>).profiles) {
-    const profiles = (updatedConfig.auth as Record<string, unknown>).profiles as Record<string, { provider?: string }>;
-    for (const [profileKey, profile] of Object.entries(profiles)) {
+  if (updatedConfig.auth?.profiles) {
+    for (const [profileKey, profile] of Object.entries(updatedConfig.auth.profiles)) {
       const provider = profile.provider;
       if (!provider) continue;
       const pluginName = PROVIDER_PLUGINS[provider];
@@ -180,14 +172,13 @@ export function applyPluginAutoEnable(
   }
 
   // Feature flags
-  if (updatedConfig.features && typeof updatedConfig.features === "object") {
-    const features = updatedConfig.features as Record<string, unknown>;
-    for (const [featureName, featureConfig] of Object.entries(features)) {
+  if (updatedConfig.features) {
+    for (const [featureName, featureConfig] of Object.entries(updatedConfig.features)) {
       const pluginName = FEATURE_PLUGINS[featureName];
       if (!pluginName) continue;
       const isEnabled = featureConfig === true ||
-        (featureConfig && typeof featureConfig === "object" &&
-          (featureConfig as Record<string, unknown>).enabled !== false);
+        (typeof featureConfig === "object" && featureConfig !== null &&
+          featureConfig.enabled !== false);
       if (!isEnabled) continue;
       const pluginId = pluginName.replace("@elizaos/plugin-", "");
       if (pluginsConfig.entries[pluginId]?.enabled === false) continue;
@@ -196,7 +187,7 @@ export function applyPluginAutoEnable(
   }
 
   // Hooks: webhooks + gmail
-  const hooksConfig = (updatedConfig as Record<string, unknown>).hooks as Record<string, unknown> | undefined;
+  const hooksConfig = updatedConfig.hooks;
   if (hooksConfig && hooksConfig.enabled !== false && hooksConfig.token) {
     const webhooksPlugin = FEATURE_PLUGINS.webhooks;
     if (webhooksPlugin) {
@@ -204,8 +195,8 @@ export function applyPluginAutoEnable(
     }
   }
   if (hooksConfig) {
-    const gmailConfig = (hooksConfig.gmail ?? {}) as Record<string, unknown>;
-    if (typeof gmailConfig.account === "string" && gmailConfig.account.trim()) {
+    const gmailConfig = hooksConfig.gmail;
+    if (gmailConfig?.account?.trim()) {
       const gmailPlugin = FEATURE_PLUGINS.gmailWatch;
       if (gmailPlugin) {
         addToAllowlist(pluginsConfig.allow, gmailPlugin, gmailPlugin.replace("@elizaos/plugin-", ""), changes, "hooks.gmail.account");

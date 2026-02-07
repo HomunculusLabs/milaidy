@@ -148,20 +148,22 @@ test.describe("Chat page", () => {
 
     const input = page.locator(".chat-input");
 
+    // Send first message — the mock /api/chat returns a response automatically
     await input.fill("First question");
     await page.locator("button").filter({ hasText: "Send" }).click();
-    await simulateAgentResponse(page, "First answer");
+    // Wait for the mock response to render
+    await expect(page.locator(".chat-msg.assistant")).toBeVisible();
 
     await input.fill("Second question");
     await page.locator("button").filter({ hasText: "Send" }).click();
-    await simulateAgentResponse(page, "Second answer");
+    // Wait for all 4 messages to render (2 user + 2 assistant)
+    await expect(page.locator(".chat-msg")).toHaveCount(4);
 
     const messages = page.locator(".chat-msg");
-    await expect(messages).toHaveCount(4);
     await expect(messages.nth(0)).toContainText("First question");
-    await expect(messages.nth(1)).toContainText("First answer");
+    await expect(messages.nth(1)).toContainText("First question");  // mock echoes input
     await expect(messages.nth(2)).toContainText("Second question");
-    await expect(messages.nth(3)).toContainText("Second answer");
+    await expect(messages.nth(3)).toContainText("Second question");  // mock echoes input
   });
 
   test("pressing Enter sends a message", async ({ page }) => {
@@ -172,7 +174,7 @@ test.describe("Chat page", () => {
     await input.fill("Enter key test");
     await input.press("Enter");
 
-    await expect(page.getByText("Enter key test")).toBeVisible();
+    await expect(page.getByText("Enter key test", { exact: true })).toBeVisible();
   });
 
   test("empty input does not send a message", async ({ page }) => {

@@ -1,11 +1,13 @@
+import process from "node:process";
 import { createRequire } from "node:module";
 
 declare const __MILAIDY_VERSION__: string | undefined;
 
+const require = createRequire(import.meta.url);
+
 function readVersionFromPackageJson(): string | null {
   try {
-    const require = createRequire(import.meta.url);
-    const pkg = require("../package.json") as { version?: string };
+    const pkg = require("../../package.json") as { version?: string };
     return pkg.version ?? null;
   } catch {
     return null;
@@ -13,10 +15,9 @@ function readVersionFromPackageJson(): string | null {
 }
 
 function readVersionFromBuildInfo(): string | null {
-  const req = createRequire(import.meta.url);
-  for (const candidate of ["../build-info.json", "./build-info.json"]) {
+  for (const candidate of ["../../build-info.json", "../build-info.json", "./build-info.json"]) {
     try {
-      const info = req(candidate) as { version?: string };
+      const info = require(candidate) as { version?: string };
       if (info.version) return info.version;
     } catch {
       // ignore missing candidate

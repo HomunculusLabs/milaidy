@@ -17,8 +17,8 @@
 
 import crypto from "node:crypto";
 import { logger } from "@elizaos/core";
-import type { Action, Memory, UUID } from "@elizaos/core";
-import { requestRestart } from "../restart.js";
+import type { Action, HandlerOptions, Memory, UUID } from "@elizaos/core";
+import { requestRestart } from "../runtime/restart.js";
 
 /** Small delay (ms) before restarting so the response has time to flush. */
 const SHUTDOWN_DELAY_MS = 1_500;
@@ -46,16 +46,11 @@ export const restartAction: Action = {
     return true;
   },
 
-  handler: async (runtime, message, _state, _options) => {
-    // Extract an optional reason from the action parameters.
-    let reason: string | undefined;
-    if (_options && typeof _options === "object") {
-      const opts = _options as Record<string, unknown>;
-      const params = (opts.parameters ?? opts) as Record<string, unknown>;
-      if (typeof params.reason === "string") {
-        reason = params.reason;
-      }
-    }
+  handler: async (runtime, message, _state, options) => {
+    // This action declares parameters, so the runtime provides HandlerOptions.
+    const params = (options as HandlerOptions | undefined)?.parameters;
+    const reason =
+      typeof params?.reason === "string" ? params.reason : undefined;
 
     const restartText = reason
       ? `Restarting… (${reason})`

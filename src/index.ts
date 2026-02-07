@@ -6,5 +6,5 @@
  */
 
 export * from "./config/types.js";
-export { RESTART_EXIT_CODE, setRestartHandler, requestRestart } from "./restart.js";
-export type { RestartHandler } from "./restart.js";
+export { RESTART_EXIT_CODE, setRestartHandler, requestRestart } from "./runtime/restart.js";
+export type { RestartHandler } from "./runtime/restart.js";

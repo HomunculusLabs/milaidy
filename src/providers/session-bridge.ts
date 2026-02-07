@@ -44,7 +44,7 @@ export function createSessionKeyProvider(options?: { defaultAgentId?: string }):
 
     async get(runtime: IAgentRuntime, message: Memory, _state: State): Promise<ProviderResult> {
       const meta = (message.metadata ?? {}) as Record<string, unknown>;
-      const existing = meta.sessionKey as string | undefined;
+      const existing = typeof meta.sessionKey === "string" ? meta.sessionKey : undefined;
 
       if (existing) {
         const parsed = parseAgentSessionKey(existing);
@@ -62,9 +62,9 @@ export function createSessionKeyProvider(options?: { defaultAgentId?: string }):
       }
 
       const key = resolveSessionKeyFromRoom(agentId, room, {
-        threadId: meta.threadId as string | undefined,
-        groupId: meta.groupId as string | undefined,
-        channel: (meta.channel as string | undefined) ?? room.source,
+        threadId: typeof meta.threadId === "string" ? meta.threadId : undefined,
+        groupId: typeof meta.groupId === "string" ? meta.groupId : undefined,
+        channel: (typeof meta.channel === "string" ? meta.channel : undefined) ?? room.source,
       });
 
       return {

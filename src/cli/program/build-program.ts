@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { VERSION } from "../../version.js";
+import { VERSION } from "../../runtime/version.js";
 import { registerProgramCommands } from "./command-registry.js";
 import { configureProgramHelp } from "./help.js";
 import { registerPreActionHooks } from "./preaction.js";

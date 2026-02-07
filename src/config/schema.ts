@@ -1,4 +1,4 @@
-import { VERSION } from "../version.js";
+import { VERSION } from "../runtime/version.js";
 
 /** Known channel IDs for config schema generation */
 const CHANNEL_IDS = [

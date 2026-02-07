@@ -19,10 +19,11 @@ export const AGENT_NAME_POOL: readonly string[] = [
 
 /** Pick `count` unique random names from the pool using Fisher-Yates shuffle. */
 export function pickRandomNames(count: number): string[] {
+  const clamped = Math.max(0, Math.min(count, AGENT_NAME_POOL.length));
   const pool = [...AGENT_NAME_POOL];
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
-  return pool.slice(0, count);
+  return pool.slice(0, clamped);
 }

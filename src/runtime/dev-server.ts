@@ -5,15 +5,23 @@
  * The MILAIDY_HEADLESS env var tells startEliza() to skip the interactive
  * CLI chat loop and return the AgentRuntime instance.
  *
- * Usage: bun src/dev-server.ts          (with MILAIDY_HEADLESS=1)
+ * Usage: bun src/runtime/dev-server.ts   (with MILAIDY_HEADLESS=1)
  *        (or via the dev script: bun run dev)
  */
 import process from "node:process";
 import { logger } from "@elizaos/core";
 import type { AgentRuntime } from "@elizaos/core";
 import { startEliza } from "./eliza.js";
-import { startApiServer } from "./api/server.js";
+import { startApiServer } from "../api/server.js";
 import { setRestartHandler } from "./restart.js";
+
+// Load .env files for parity with CLI mode (which loads via run-main.ts).
+try {
+  const { config } = await import("dotenv");
+  config();
+} catch {
+  // dotenv not installed or .env not found — non-fatal.
+}
 
 const port = Number(process.env.MILAIDY_PORT) || 31337;
 
@@ -144,13 +152,12 @@ async function main() {
   updateRuntime(runtime);
 }
 
-main().catch((err) => {
-  console.error(
-    "[milaidy] Fatal error:",
-    err instanceof Error ? (err.stack ?? err.message) : err,
-  );
-  if (err?.cause) {
-    console.error("[milaidy] Caused by:", err.cause instanceof Error ? (err.cause.stack ?? err.cause.message) : err.cause);
+main().catch((err: unknown) => {
+  const error = err instanceof Error ? err : new Error(String(err));
+  console.error("[milaidy] Fatal error:", error.stack ?? error.message);
+  if (error.cause) {
+    const cause = error.cause instanceof Error ? error.cause : new Error(String(error.cause));
+    console.error("[milaidy] Caused by:", cause.stack ?? cause.message);
   }
   process.exit(1);
 });

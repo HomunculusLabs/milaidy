@@ -29,7 +29,7 @@ import {
 } from "@elizaos/core";
 
 import { loadMilaidyConfig, type MilaidyConfig } from "../config/config.js";
-import { createMilaidyPlugin } from "../milaidy-plugin.js";
+import { createMilaidyPlugin } from "../runtime/milaidy-plugin.js";
 import {
   ensureAgentWorkspace,
   resolveDefaultAgentWorkspaceDir,
@@ -42,7 +42,6 @@ import {
   clearCapturedAction,
   BENCHMARK_MESSAGE_TEMPLATE,
   type BenchmarkContext,
-  type CapturedAction,
 } from "./plugin.js";
 
 // ---------------------------------------------------------------------------
@@ -143,11 +142,12 @@ function buildBenchmarkCharacter(config: MilaidyConfig): Character {
   const name = config.agents?.list?.[0]?.name ?? "Milaidy";
   const bio = "An AI assistant powered by Milaidy and ElizaOS, executing benchmark tasks with precision.";
 
-  // Collect API secrets from env
+  // Collect API secrets from env — must match PROVIDER_PLUGIN_MAP keys
   const secretKeys = [
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "GOOGLE_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
     "GROQ_API_KEY",
     "XAI_API_KEY",
     "OPENROUTER_API_KEY",
@@ -238,19 +238,39 @@ async function createBenchmarkRuntime(
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-function readBody(req: http.IncomingMessage): Promise<string> {
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
+function readBody(
+  req: http.IncomingMessage,
+  maxBytes = MAX_BODY_BYTES,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let totalBytes = 0;
+    req.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        req.destroy();
+        reject(new Error(`Request body exceeds ${maxBytes} bytes`));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
     req.on("error", reject);
   });
 }
 
+function extractTag(text: string, tag: string): string | undefined {
+  const re = new RegExp(`<${tag}>(.*?)</${tag}>`, "s");
+  const m = text.match(re);
+  return m ? m[1].trim() : undefined;
+}
+
 function jsonResponse(
   res: http.ServerResponse,
   status: number,
-  body: Record<string, unknown>,
+  body: object,
 ): void {
   const json = JSON.stringify(body);
   res.writeHead(status, {
@@ -267,6 +287,12 @@ function jsonResponse(
 
 async function main(): Promise<void> {
   const port = Number(process.env.MILAIDY_BENCH_PORT ?? "3939");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    logger.error(
+      `[bench] Invalid port: ${process.env.MILAIDY_BENCH_PORT ?? "(undefined)"}`,
+    );
+    process.exit(1);
+  }
 
   // Load config
   let config: MilaidyConfig;
@@ -298,8 +324,10 @@ async function main(): Promise<void> {
         channelId: "benchmark",
         type: ChannelType.API,
       });
-    } catch {
-      // Ignore — room may already exist
+    } catch (err) {
+      // Room may already exist — log at debug level for visibility
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.debug(`[bench] ensureRoom: ${msg}`);
     }
   }
 
@@ -334,7 +362,13 @@ async function main(): Promise<void> {
 
       // Reset session
       if (pathname === "/api/benchmark/reset" && req.method === "POST") {
-        const body = JSON.parse(await readBody(req)) as ResetRequest;
+        let body: ResetRequest;
+        try {
+          body = JSON.parse(await readBody(req)) as ResetRequest;
+        } catch {
+          jsonResponse(res, 400, { error: "Invalid JSON in request body" });
+          return;
+        }
 
         // Create a fresh room for the new task
         currentRoomId = stringToUuid(`bench-${body.task_id}-${crypto.randomUUID()}`);
@@ -350,7 +384,13 @@ async function main(): Promise<void> {
 
       // Send message
       if (pathname === "/api/benchmark/message" && req.method === "POST") {
-        const body = JSON.parse(await readBody(req)) as MessageRequest;
+        let body: MessageRequest;
+        try {
+          body = JSON.parse(await readBody(req)) as MessageRequest;
+        } catch {
+          jsonResponse(res, 400, { error: "Invalid JSON in request body" });
+          return;
+        }
 
         if (!body.text) {
           jsonResponse(res, 400, { error: "Missing 'text' field" });
@@ -379,7 +419,7 @@ async function main(): Promise<void> {
 
         // Process through the FULL canonical pipeline.
         let responseText = "";
-        let callbackTexts: string[] = [];
+        const callbackTexts: string[] = [];
         let responseThought: string | null = null;
         let responseActions: string[] = [];
 
@@ -403,11 +443,9 @@ async function main(): Promise<void> {
         // Extract structured data from result
         if (result?.responseContent) {
           const rc = result.responseContent;
-          if (rc) {
-            responseText = responseText || rc.text || "";
-            responseThought = rc.thought ?? null;
-            responseActions = rc.actions ?? [];
-          }
+          responseText = responseText || rc.text || "";
+          responseThought = rc.thought ?? null;
+          responseActions = rc.actions ?? [];
         }
 
         // Build params from captured action handler or XML in response text.
@@ -436,12 +474,6 @@ async function main(): Promise<void> {
           responseText,
           ...callbackTexts,
         ].join("\n");
-        function extractTag(text: string, tag: string): string | undefined {
-          const re = new RegExp(`<${tag}>(.*?)</${tag}>`, "s");
-          const m = text.match(re);
-          return m ? m[1].trim() : undefined;
-        }
-
         if (!params.command && !params.tool_name && !params.operation) {
           const cmd = extractTag(allText, "command");
           const tn = extractTag(allText, "tool_name");
@@ -471,7 +503,7 @@ async function main(): Promise<void> {
           params,
         };
 
-        jsonResponse(res, 200, response as unknown as Record<string, unknown>);
+        jsonResponse(res, 200, response);
         return;
       }
 

@@ -174,7 +174,7 @@ if (uiOnly) {
   // LOG_LEVEL=error suppresses info/warn output in dev mode.
   console.log("\n  [milaidy] Starting dev server...\n");
 
-  apiProcess = spawn("bun", ["--watch", "src/dev-server.ts"], {
+  apiProcess = spawn("bun", ["--watch", "src/runtime/dev-server.ts"], {
     cwd,
     env: {
       ...process.env,

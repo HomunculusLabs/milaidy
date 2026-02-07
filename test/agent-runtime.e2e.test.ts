@@ -541,7 +541,7 @@ describe("Agent Runtime E2E", () => {
 
       const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
         // Use node --import tsx to run the TypeScript source directly
-        const child = spawn("node", ["--import", "tsx", "src/eliza.ts"], {
+        const child = spawn("node", ["--import", "tsx", "src/runtime/eliza.ts"], {
           cwd: packageRoot,
           env,
           stdio: ["pipe", "pipe", "pipe"],

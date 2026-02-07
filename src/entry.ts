@@ -11,10 +11,8 @@ import { applyCliProfileEnv, parseCliProfileArgs } from "./cli/profile.js";
 
 process.title = "milaidy";
 
-// Normalize env: copy Z_AI_API_KEY → ZAI_API_KEY when ZAI_API_KEY is empty.
-if (!process.env.ZAI_API_KEY?.trim() && process.env.Z_AI_API_KEY?.trim()) {
-  process.env.ZAI_API_KEY = process.env.Z_AI_API_KEY;
-}
+// NOTE: Z_AI_API_KEY → ZAI_API_KEY normalization is handled in
+// run-main.ts (after dotenv loads), so we don't duplicate it here.
 
 if (process.argv.includes("--no-color")) {
   process.env.NO_COLOR = "1";
@@ -41,5 +39,5 @@ import("./cli/run-main.js")
       "[milaidy] Failed to start CLI:",
       error instanceof Error ? (error.stack ?? error.message) : error,
     );
-    process.exitCode = 1;
+    process.exit(1);
   });

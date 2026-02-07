@@ -8,11 +8,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "../..");
 const uiDir = path.join(projectRoot, "apps", "ui");
 
-// Resolve Playwright CLI via Node module resolution so we don't depend on
-// node_modules/.bin symlinks being present (bun workspace hoisting can skip them).
-const uiRequire = createRequire(path.join(uiDir, "index.js"));
-const playwrightPkg = uiRequire.resolve("@playwright/test/package.json");
-const playwrightCli = path.join(path.dirname(playwrightPkg), "cli.js");
+// Resolve Playwright CLI lazily — if @playwright/test isn't installed (e.g.
+// in CI unit-test jobs that don't install apps/ui devDependencies), the
+// playwright test suite is simply skipped rather than crashing the runner.
+let playwrightCli = null;
+try {
+  const uiRequire = createRequire(path.join(uiDir, "index.js"));
+  const playwrightPkg = uiRequire.resolve("@playwright/test/package.json");
+  playwrightCli = path.join(path.dirname(playwrightPkg), "cli.js");
+} catch {
+  // @playwright/test not available — playwright tests will be skipped
+}
 
 /**
  * Each entry describes a test suite to run in parallel.
@@ -27,12 +33,15 @@ const runs = [
     args: ["vitest", "run", "--config", "vitest.unit.config.ts"],
     vitest: true,
   },
-  {
-    name: "e2e:playwright",
-    cmd: "node",
-    args: [playwrightCli, "test"],
-    cwd: uiDir,
-  },
+  // Only include playwright tests if @playwright/test is installed
+  ...(playwrightCli
+    ? [{
+        name: "e2e:playwright",
+        cmd: "node",
+        args: [playwrightCli, "test"],
+        cwd: uiDir,
+      }]
+    : []),
 ];
 
 const children = new Set();

@@ -1,0 +1,251 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v2.0.0-alpha.3)"
+        required: false
+        type: string
+      draft:
+        description: "Create as draft release"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: "true"
+  NODE_OPTIONS: "--max-old-space-size=8192"
+
+jobs:
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v$(node -p "require('./package.json').version")"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release version: $VERSION (tag: $TAG)"
+
+  build-desktop:
+    name: Build ${{ matrix.platform.name }}
+    needs: prepare
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          # macos-14 (ARM64) cross-compiles x64 via Rosetta
+          - name: macOS (Intel)
+            runner: macos-14
+            electron-args: --mac --x64
+            artifact-glob: "*.dmg"
+            artifact-name: macos-x64
+          - name: macOS (Apple Silicon)
+            runner: macos-14
+            electron-args: --mac --arm64
+            artifact-glob: "*.dmg"
+            artifact-name: macos-arm64
+          - name: Windows
+            runner: windows-latest
+            electron-args: --win
+            artifact-glob: "*.exe"
+            artifact-name: windows-x64
+          - name: Linux
+            runner: ubuntu-latest
+            electron-args: --linux
+            artifact-glob: "*.{AppImage,deb}"
+            artifact-name: linux-x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install root dependencies
+        run: bun install
+
+      - name: Build core
+        run: |
+          bunx tsdown
+          node --import tsx scripts/write-build-info.ts
+
+      - name: Build UI
+        run: node scripts/ui.js build
+
+      - name: Install Capacitor app dependencies
+        run: bun install
+        working-directory: apps/app
+
+      - name: Build Capacitor plugins
+        run: |
+          for d in gateway swabble camera screencapture canvas desktop location talkmode agent; do
+            echo "[plugin:$d] building..."
+            (cd plugins/$d && npm run build)
+          done
+        working-directory: apps/app
+        shell: bash
+
+      - name: Refresh Capacitor app dependencies
+        run: bun install
+        working-directory: apps/app
+
+      - name: Build Capacitor app
+        run: bun run build
+        working-directory: apps/app
+
+      - name: Sync Electron
+        run: bun run cap:sync:electron
+        working-directory: apps/app
+
+      - name: Install Electron dependencies
+        run: npm install --no-audit --no-fund
+        working-directory: apps/app/electron
+
+      - name: Build Electron app
+        run: bun run build
+        working-directory: apps/app/electron
+
+      # ── Code signing & notarization ────────────────────────────────────
+      # macOS: electron-builder auto-notarizes when hardenedRuntime is true
+      # and the APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD env vars are set.
+      #
+      # Required GitHub Secrets for Gatekeeper-clean macOS builds:
+      #   CSC_LINK                     – base64-encoded .p12 signing certificate
+      #   CSC_KEY_PASSWORD             – password for the .p12 certificate
+      #   APPLE_ID                     – Apple Developer account email
+      #   APPLE_APP_SPECIFIC_PASSWORD  – app-specific password (appleid.apple.com)
+      #   APPLE_TEAM_ID                – Apple Developer Team ID
+      #
+      # Windows signing via Azure Trusted Signing ($10/mo managed service):
+      #   AZURE_TENANT_ID              – Azure AD (Entra ID) tenant/directory ID
+      #   AZURE_CLIENT_ID              – App Registration application (client) ID
+      #   AZURE_CLIENT_SECRET          – App Registration client secret value
+      #   The azureSignOptions in electron-builder.config.json point to the
+      #   Trusted Signing account + certificate profile. electron-builder
+      #   auto-detects Azure signing when these env vars are set.
+      #
+      # If secrets are not set, builds will still succeed but won't be
+      # signed/notarized (Gatekeeper will show warnings on macOS,
+      # SmartScreen will warn on Windows).
+      - name: Package desktop app
+        run: |
+          # Unset empty signing env vars — electron-builder treats "" as an invalid file path
+          [ -z "$CSC_LINK" ] && unset CSC_LINK CSC_KEY_PASSWORD
+          [ -z "$APPLE_ID" ] && unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+          [ -z "$AZURE_TENANT_ID" ] && unset AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET
+          bunx electron-builder build ${{ matrix.platform.electron-args }} -c ./electron-builder.config.json
+        working-directory: apps/app/electron
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform.artifact-name }}
+          path: |
+            apps/app/electron/dist/*.dmg
+            apps/app/electron/dist/*.zip
+            apps/app/electron/dist/*.exe
+            apps/app/electron/dist/*.AppImage
+            apps/app/electron/dist/*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: [prepare, build-desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: desktop-*
+          merge-multiple: false
+
+      - name: List artifacts
+        run: find release-artifacts -type f | sort
+
+      - name: Collect release files
+        run: |
+          mkdir -p release-files
+          find release-artifacts -type f \( \
+            -name "*.dmg" -o \
+            -name "*.zip" -o \
+            -name "*.exe" -o \
+            -name "*.AppImage" -o \
+            -name "*.deb" \
+          \) -exec cp {} release-files/ \;
+          echo "Release files:"
+          ls -lh release-files/
+
+      - name: Generate checksums
+        run: |
+          cd release-files
+          sha256sum * > SHA256SUMS.txt
+          echo "Checksums:"
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Milaidy ${{ needs.prepare.outputs.tag }}
+          draft: ${{ inputs.draft || false }}
+          prerelease: ${{ contains(needs.prepare.outputs.version, 'alpha') || contains(needs.prepare.outputs.version, 'beta') || contains(needs.prepare.outputs.version, 'rc') }}
+          generate_release_notes: true
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

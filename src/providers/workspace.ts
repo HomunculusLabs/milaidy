@@ -216,8 +216,7 @@ async function writeFileIfMissing(filePath: string, content: string) {
       flag: "wx",
     });
   } catch (err) {
-    const anyErr = err as { code?: string };
-    if (anyErr.code !== "EEXIST") {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
       throw err;
     }
   }
@@ -307,14 +306,17 @@ export async function ensureAgentWorkspace(params?: {
   const heartbeatTemplate = WORKSPACE_TEMPLATES[DEFAULT_HEARTBEAT_FILENAME];
   const bootstrapTemplate = WORKSPACE_TEMPLATES[DEFAULT_BOOTSTRAP_FILENAME];
 
-  await writeFileIfMissing(agentsPath, agentsTemplate);
-  await writeFileIfMissing(toolsPath, toolsTemplate);
-  await writeFileIfMissing(identityPath, identityTemplate);
-  await writeFileIfMissing(userPath, userTemplate);
-  await writeFileIfMissing(heartbeatPath, heartbeatTemplate);
+  const writeOps = [
+    writeFileIfMissing(agentsPath, agentsTemplate),
+    writeFileIfMissing(toolsPath, toolsTemplate),
+    writeFileIfMissing(identityPath, identityTemplate),
+    writeFileIfMissing(userPath, userTemplate),
+    writeFileIfMissing(heartbeatPath, heartbeatTemplate),
+  ];
   if (isBrandNewWorkspace) {
-    await writeFileIfMissing(bootstrapPath, bootstrapTemplate);
+    writeOps.push(writeFileIfMissing(bootstrapPath, bootstrapTemplate));
   }
+  await Promise.all(writeOps);
   await ensureGitRepo(dir, isBrandNewWorkspace);
 
   return {
@@ -400,20 +402,16 @@ export async function loadWorkspaceBootstrapFiles(dir: string): Promise<Workspac
 
   entries.push(...(await resolveMemoryBootstrapEntries(resolvedDir)));
 
-  const result: WorkspaceBootstrapFile[] = [];
-  for (const entry of entries) {
-    try {
-      const content = await fs.readFile(entry.filePath, "utf-8");
-      result.push({
-        name: entry.name,
-        path: entry.filePath,
-        content,
-        missing: false,
-      });
-    } catch {
-      result.push({ name: entry.name, path: entry.filePath, missing: true });
-    }
-  }
+  const result = await Promise.all(
+    entries.map(async (entry): Promise<WorkspaceBootstrapFile> => {
+      try {
+        const content = await fs.readFile(entry.filePath, "utf-8");
+        return { name: entry.name, path: entry.filePath, content, missing: false };
+      } catch {
+        return { name: entry.name, path: entry.filePath, missing: true };
+      }
+    }),
+  );
   return result;
 }
 

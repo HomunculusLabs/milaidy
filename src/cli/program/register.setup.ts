@@ -15,7 +15,7 @@ export function registerSetupCommand(program: Command) {
         `\n${theme.muted("Docs:")} ${formatDocsLink("/getting-started/setup", "docs.milady.ai/getting-started/setup")}\n`,
     )
     .option("--workspace <dir>", "Agent workspace directory")
-    .action(async (opts) => {
+    .action(async (opts: { workspace?: string }) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const { loadMilaidyConfig } = await import("../../config/config.js");
         const {

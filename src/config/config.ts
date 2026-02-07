@@ -23,7 +23,7 @@ export function loadMilaidyConfig(): MilaidyConfig {
 
   const envVars = collectConfigEnvVars(resolved);
   for (const [key, value] of Object.entries(envVars)) {
-    if (!process.env[key]) {
+    if (process.env[key] === undefined) {
       process.env[key] = value;
     }
   }
@@ -39,7 +39,10 @@ export function saveMilaidyConfig(config: MilaidyConfig): void {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 
-  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, {
+    encoding: "utf-8",
+    mode: 0o600, // Owner read+write only — config may contain private keys in env section
+  });
 }
 
 export function configFileExists(): boolean {

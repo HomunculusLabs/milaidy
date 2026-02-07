@@ -8,10 +8,10 @@
 
 import type { Plugin, MessagePayload } from "@elizaos/core";
 import { getSessionProviders, resolveDefaultSessionStorePath } from "@elizaos/core";
-import { createWorkspaceProvider } from "./providers/workspace-provider.js";
-import { createSessionKeyProvider, resolveSessionKeyFromRoom } from "./providers/session-bridge.js";
-import { DEFAULT_AGENT_WORKSPACE_DIR } from "./providers/workspace.js";
-import { restartAction } from "./actions/restart.js";
+import { createWorkspaceProvider } from "../providers/workspace-provider.js";
+import { createSessionKeyProvider, resolveSessionKeyFromRoom } from "../providers/session-bridge.js";
+import { DEFAULT_AGENT_WORKSPACE_DIR } from "../providers/workspace.js";
+import { restartAction } from "../actions/restart.js";
 
 export type MilaidyPluginConfig = {
   workspaceDir?: string;
@@ -44,7 +44,11 @@ export function createMilaidyPlugin(config?: MilaidyPluginConfig): Plugin {
           const { runtime, message } = payload;
           if (!message || !runtime) return;
 
-          const meta = (message.metadata ?? {}) as Record<string, unknown>;
+          // Ensure metadata is initialized so we can read and write to it.
+          if (!message.metadata) {
+            message.metadata = { type: "message" } as typeof message.metadata;
+          }
+          const meta = message.metadata as Record<string, unknown>;
           if (meta.sessionKey) return;
 
           const room = await runtime.getRoom(message.roomId);
@@ -55,7 +59,7 @@ export function createMilaidyPlugin(config?: MilaidyPluginConfig): Plugin {
             groupId: meta.groupId as string | undefined,
             channel: (meta.channel as string | undefined) ?? room.source,
           });
-          (message.metadata as Record<string, unknown>).sessionKey = key;
+          meta.sessionKey = key;
         },
       ],
     },

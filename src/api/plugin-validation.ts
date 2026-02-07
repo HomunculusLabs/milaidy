@@ -4,6 +4,9 @@
  * Validates plugin configuration by checking all required parameters
  * from the plugin's agentConfig.pluginParameters definition, plus
  * provider-specific API key format checks.
+ *
+ * Also provides runtime context validation to detect null, undefined,
+ * empty, and non-serializable fields in context objects.
  */
 
 // ---------------------------------------------------------------------------
@@ -17,6 +20,22 @@ export interface PluginValidationResult {
   errors: Array<{ field: string; message: string }>;
   /** Soft warnings that may indicate misconfiguration. */
   warnings: Array<{ field: string; message: string }>;
+}
+
+/** Result of runtime context validation. */
+export interface RuntimeContextValidationResult {
+  /** Whether the context is valid (no null, undefined, or empty fields). */
+  valid: boolean;
+  /** Whether the context is fully JSON-serializable. */
+  serializable: boolean;
+  /** Field paths that are null. */
+  nullFields: string[];
+  /** Field paths that are undefined. */
+  undefinedFields: string[];
+  /** Field paths that are empty strings. */
+  emptyFields: string[];
+  /** Field paths that contain non-serializable values (functions, symbols, etc.). */
+  nonSerializableFields: string[];
 }
 
 /** Parameter definition from agentConfig.pluginParameters in package.json. */
@@ -139,4 +158,157 @@ export function validatePluginConfig(
     errors,
     warnings,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Runtime context validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a runtime context object for null, undefined, empty, and
+ * non-serializable fields.
+ *
+ * Used after provider + plugin resolution to detect and surface invalid
+ * or malformed context early — before it reaches the agent runtime.
+ *
+ * @param context - The context object to validate.
+ * @param maxDepth - Maximum nesting depth to inspect (default: 5).
+ */
+export function validateRuntimeContext(
+  context: Record<string, unknown>,
+  maxDepth: number = 5,
+): RuntimeContextValidationResult {
+  const nullFields: string[] = [];
+  const undefinedFields: string[] = [];
+  const emptyFields: string[] = [];
+  const nonSerializableFields: string[] = [];
+
+  function walk(obj: Record<string, unknown>, prefix: string, depth: number): void {
+    if (depth > maxDepth) return;
+
+    for (const [key, value] of Object.entries(obj)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+
+      if (value === null) {
+        nullFields.push(path);
+        continue;
+      }
+
+      if (value === undefined) {
+        undefinedFields.push(path);
+        continue;
+      }
+
+      if (typeof value === "string" && value.trim() === "") {
+        emptyFields.push(path);
+        continue;
+      }
+
+      // Check for non-serializable values
+      if (typeof value === "function") {
+        nonSerializableFields.push(path);
+        continue;
+      }
+
+      if (typeof value === "symbol") {
+        nonSerializableFields.push(path);
+        continue;
+      }
+
+      if (typeof value === "bigint") {
+        nonSerializableFields.push(path);
+        continue;
+      }
+
+      // Recurse into plain objects
+      if (
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        !(value instanceof Date) &&
+        !(value instanceof RegExp)
+      ) {
+        walk(value as Record<string, unknown>, path, depth + 1);
+      }
+    }
+  }
+
+  walk(context, "", 0);
+
+  // Check overall serialization
+  let serializable = true;
+  if (nonSerializableFields.length > 0) {
+    serializable = false;
+  } else {
+    try {
+      JSON.stringify(context);
+    } catch {
+      serializable = false;
+    }
+  }
+
+  const valid =
+    nullFields.length === 0 &&
+    undefinedFields.length === 0 &&
+    emptyFields.length === 0;
+
+  return {
+    valid,
+    serializable,
+    nullFields,
+    undefinedFields,
+    emptyFields,
+    nonSerializableFields,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Plugin context debug logging
+// ---------------------------------------------------------------------------
+
+/**
+ * Log the full resolved plugin/provider context for debugging.
+ *
+ * Prints a structured summary of all loaded plugins, providers,
+ * and any validation issues detected in the context.
+ *
+ * @param plugins - Array of resolved plugin names.
+ * @param providers - Array of resolved provider names.
+ * @param context - The runtime context object to inspect.
+ * @param log - Logger function (defaults to console.debug).
+ */
+export function debugLogResolvedContext(
+  plugins: string[],
+  providers: string[],
+  context: Record<string, unknown>,
+  log: (msg: string) => void = console.debug,
+): void {
+  log("[milaidy:debug] ══════ Resolved Plugin/Provider Context ══════");
+  log(`[milaidy:debug] Plugins loaded (${plugins.length}):`);
+  for (const name of plugins) {
+    log(`[milaidy:debug]   • ${name}`);
+  }
+  log(`[milaidy:debug] Providers loaded (${providers.length}):`);
+  for (const name of providers) {
+    log(`[milaidy:debug]   • ${name}`);
+  }
+
+  const validation = validateRuntimeContext(context);
+  if (validation.valid && validation.serializable) {
+    log("[milaidy:debug] Context validation: ✓ PASS (all fields valid, serializable)");
+  } else {
+    log("[milaidy:debug] Context validation: ✗ ISSUES DETECTED");
+    if (validation.nullFields.length > 0) {
+      log(`[milaidy:debug]   null fields: ${validation.nullFields.join(", ")}`);
+    }
+    if (validation.undefinedFields.length > 0) {
+      log(`[milaidy:debug]   undefined fields: ${validation.undefinedFields.join(", ")}`);
+    }
+    if (validation.emptyFields.length > 0) {
+      log(`[milaidy:debug]   empty fields: ${validation.emptyFields.join(", ")}`);
+    }
+    if (validation.nonSerializableFields.length > 0) {
+      log(`[milaidy:debug]   non-serializable fields: ${validation.nonSerializableFields.join(", ")}`);
+    }
+  }
+  log("[milaidy:debug] ══════════════════════════════════════════════");
 }

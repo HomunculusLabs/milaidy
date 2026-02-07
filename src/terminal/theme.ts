@@ -6,7 +6,9 @@ const hasForceColor =
   process.env.FORCE_COLOR.trim().length > 0 &&
   process.env.FORCE_COLOR.trim() !== "0";
 
-const baseChalk = process.env.NO_COLOR && !hasForceColor ? new Chalk({ level: 0 }) : chalk;
+const hasNoColor = process.env.NO_COLOR !== undefined;
+
+const baseChalk = hasNoColor && !hasForceColor ? new Chalk({ level: 0 }) : chalk;
 
 const hex = (value: string) => baseChalk.hex(value);
 

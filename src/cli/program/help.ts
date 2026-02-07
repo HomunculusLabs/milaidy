@@ -19,7 +19,7 @@ export function configureProgramHelp(program: Command, programVersion: string) {
   program
     .name(CLI_NAME)
     .description("")
-    .version(programVersion)
+    .version(programVersion, "-v, --version")
     .option(
       "--dev",
       "Dev profile: isolate state under ~/.milaidy-dev with separate config and ports",
@@ -47,15 +47,6 @@ export function configureProgramHelp(program: Command, programVersion: string) {
     writeErr: (str) => process.stderr.write(str),
     outputError: (str, write) => write(theme.error(str)),
   });
-
-  if (
-    process.argv.includes("-V") ||
-    process.argv.includes("--version") ||
-    process.argv.includes("-v")
-  ) {
-    console.log(programVersion);
-    process.exit(0);
-  }
 
   program.addHelpText("beforeAll", () => {
     if (hasEmittedCliBanner()) {

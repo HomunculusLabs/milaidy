@@ -3,9 +3,10 @@
  *
  * Uses a mock handler so the tests don't actually exit or restart anything.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ActionResult, Memory } from "@elizaos/core";
 import { restartAction } from "./restart.js";
-import { setRestartHandler } from "../restart.js";
+import { setRestartHandler } from "../runtime/restart.js";
 
 // --- Mock runtime & message ------------------------------------------------
 
@@ -28,6 +29,11 @@ beforeEach(() => {
   setRestartHandler(() => {
     /* no-op for tests */
   });
+});
+
+// Restore real timers even if a test assertion fails mid-flight.
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("RESTART_AGENT action", () => {
@@ -59,7 +65,7 @@ describe("RESTART_AGENT action", () => {
     );
 
     expect(result).toBeDefined();
-    const res = result as Record<string, unknown>;
+    const res = result as ActionResult;
     expect(res.success).toBe(true);
     expect(res.text).toBe("Restarting…");
     expect(res.values).toEqual({ restarting: true });
@@ -78,10 +84,10 @@ describe("RESTART_AGENT action", () => {
     const createMemory = rt.createMemory as ReturnType<typeof vi.fn>;
     expect(createMemory).toHaveBeenCalledOnce();
 
-    const [memory, tableName] = createMemory.mock.calls[0] as [Record<string, unknown>, string];
+    const [memory, tableName] = createMemory.mock.calls[0] as [Memory, string];
     expect(tableName).toBe("messages");
-    expect((memory.content as Record<string, unknown>).text).toBe("Restarting…");
-    expect((memory.content as Record<string, unknown>).type).toBe("system");
+    expect(memory.content.text).toBe("Restarting…");
+    expect(memory.content.type).toBe("system");
     expect(memory.entityId).toBe("agent-test-id");
     expect(memory.roomId).toBe("room-test-id");
   });
@@ -97,8 +103,8 @@ describe("RESTART_AGENT action", () => {
     );
 
     const createMemory = rt.createMemory as ReturnType<typeof vi.fn>;
-    const [memory] = createMemory.mock.calls[0] as [Record<string, unknown>];
-    expect((memory.content as Record<string, unknown>).text).toBe("Restarting… (code updated)");
+    const [memory] = createMemory.mock.calls[0] as [Memory];
+    expect(memory.content.text).toBe("Restarting… (code updated)");
   });
 
   it("handler schedules a delayed requestRestart call", async () => {
@@ -121,8 +127,6 @@ describe("RESTART_AGENT action", () => {
 
     expect(handler).toHaveBeenCalledOnce();
     expect(handler).toHaveBeenCalledWith(undefined);
-
-    vi.useRealTimers();
   });
 
   it("handler passes reason from parameters", async () => {
@@ -140,8 +144,6 @@ describe("RESTART_AGENT action", () => {
     vi.advanceTimersByTime(2000);
 
     expect(handler).toHaveBeenCalledWith("code updated");
-
-    vi.useRealTimers();
   });
 
   it("handler still succeeds if createMemory throws", async () => {
@@ -157,7 +159,7 @@ describe("RESTART_AGENT action", () => {
       undefined,
     );
 
-    const res = result as Record<string, unknown>;
+    const res = result as ActionResult;
     expect(res.success).toBe(true);
     expect(res.text).toBe("Restarting…");
   });

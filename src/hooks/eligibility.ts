@@ -3,12 +3,13 @@
  */
 
 import { existsSync } from "node:fs";
+import { delimiter } from "node:path";
 import { platform } from "node:os";
-import type { HookEntry, MilaidyHookMetadata, HookStatus } from "./types.js";
+import type { MilaidyHookMetadata } from "./types.js";
 import type { HookConfig, InternalHooksConfig } from "../config/types.hooks.js";
 
 function binaryExists(name: string): boolean {
-  const pathDirs = (process.env.PATH ?? "").split(":");
+  const pathDirs = (process.env.PATH ?? "").split(delimiter);
   for (const dir of pathDirs) {
     if (existsSync(`${dir}/${name}`)) return true;
   }
@@ -54,9 +55,9 @@ export function checkEligibility(
     return { eligible: true, missing: [] };
   }
 
-  if (hookConfig?.enabled === false) {
-    return { eligible: false, missing: ["Disabled in config"] };
-  }
+  // Note: hookConfig.enabled is intentionally NOT checked here.
+  // "Disabled" (user choice) vs "ineligible" (missing requirements) are
+  // separate concerns — the loader handles the enabled flag.
 
   if (metadata.os && metadata.os.length > 0) {
     if (!metadata.os.includes(platform())) {

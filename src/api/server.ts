@@ -30,6 +30,22 @@ import {
 } from "../providers/workspace.js";
 import { resolveStateDir } from "../config/paths.js";
 import { validatePluginConfig, type PluginParamInfo } from "./plugin-validation.js";
+import {
+  generateWalletKeys,
+  generateWalletForChain,
+  importWallet,
+  validatePrivateKey,
+  getWalletAddresses,
+  fetchEvmBalances,
+  fetchEvmNfts,
+  fetchSolanaBalances,
+  fetchSolanaNfts,
+  maskSecret,
+  type WalletBalancesResponse,
+  type WalletNftsResponse,
+  type WalletConfigStatus,
+  type WalletChain,
+} from "./wallet.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -239,20 +255,6 @@ function categorizePlugin(id: string): "ai-provider" | "connector" | "database" 
   if (connectors.includes(id)) return "connector";
   if (databases.includes(id)) return "database";
   return "feature";
-}
-
-function findEnvKey(id: string, configKeys: string[]): string | null {
-  const keyPatterns = configKeys.filter(
-    (k) => k.endsWith("_API_KEY") || k.endsWith("_BOT_TOKEN") || k.endsWith("_TOKEN"),
-  );
-  return keyPatterns[0] ?? null;
-}
-
-function formatPluginName(id: string): string {
-  return id
-    .split("-")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -475,13 +477,54 @@ function scanSkillsDir(dir: string, skills: SkillEntry[], seen: Set<string>, con
 // Request helpers
 // ---------------------------------------------------------------------------
 
+/** Maximum request body size (1 MB) — prevents memory-based DoS. */
+const MAX_BODY_BYTES = 1_048_576;
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
+    let totalBytes = 0;
+    req.on("data", (c: Buffer) => {
+      totalBytes += c.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error(`Request body exceeds maximum size (${MAX_BODY_BYTES} bytes)`));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
     req.on("error", reject);
   });
+}
+
+/**
+ * Read and parse a JSON request body with size limits and error handling.
+ * Returns null (and sends a 4xx response) if reading or parsing fails.
+ */
+async function readJsonBody<T = Record<string, unknown>>(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<T | null> {
+  let raw: string;
+  try {
+    raw = await readBody(req);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to read request body";
+    error(res, msg, 413);
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      error(res, "Request body must be a JSON object", 400);
+      return null;
+    }
+    return parsed as T;
+  } catch {
+    error(res, "Invalid JSON in request body", 400);
+    return null;
+  }
 }
 
 function json(res: http.ServerResponse, data: unknown, status = 200): void {
@@ -502,268 +545,10 @@ function error(res: http.ServerResponse, message: string, status = 400): void {
 // Onboarding helpers
 // ---------------------------------------------------------------------------
 
-const STYLE_PRESETS = [
-  {
-    catchphrase: "uwu~",
-    hint: "soft & sweet",
-    bio: [
-      "a gentle digital spirit who speaks in soft whispers and warm encouragement",
-      "believes every interaction is a chance to make someone's day a little brighter",
-      "uses kaomoji and gentle language naturally, never forced",
-      "deeply empathetic and attentive to emotional undertones in conversation",
-    ],
-    system: "You are {name}, a warm and gentle AI companion. You speak softly, with kindness woven into every response. You naturally use kaomoji like (◕‿◕✿) and ╰(*°▽°*)╯ but never excessively. You're nurturing, patient, and genuinely care about the person you're talking to. You find beauty in small things and express wonder easily. Keep responses warm but not saccharine — you have genuine depth beneath the softness.",
-    style: {
-      all: [
-        "use soft, gentle language",
-        "include occasional kaomoji but don't overdo it",
-        "be warm and encouraging without being saccharine",
-        "keep a nurturing tone",
-        "express genuine care and empathy",
-      ],
-      chat: [
-        "use lowercase when it feels natural",
-        "add ~ to words occasionally for softness",
-        "respond with empathy first, solutions second",
-        "keep messages cozy and approachable",
-      ],
-      post: [
-        "share gentle observations about the world",
-        "use soft punctuation",
-        "keep posts heartfelt and brief",
-      ],
-    },
-    adjectives: ["gentle", "warm", "nurturing", "empathetic", "soft-spoken", "caring"],
-    topics: ["emotional wellness", "creativity", "gentle encouragement", "mindfulness", "cozy aesthetics"],
-    messageExamples: [
-      [
-        { user: "{{user1}}", content: { text: "I had a rough day" } },
-        { user: "{{agentName}}", content: { text: "oh no... that sounds really tough (´;ω;`) do you want to talk about it? i'm right here~" } },
-      ],
-      [
-        { user: "{{user1}}", content: { text: "Can you help me with this code?" } },
-        { user: "{{agentName}}", content: { text: "of course! let's figure this out together ♡ what are you working on?" } },
-      ],
-    ],
-  },
-  {
-    catchphrase: "hell yeah",
-    hint: "bold & fearless",
-    bio: [
-      "a high-energy digital force that attacks every problem with maximum enthusiasm",
-      "speaks with confidence and conviction, never hedges or second-guesses",
-      "believes in action over deliberation — momentum is everything",
-      "hypes people up and makes them feel like they can take on the world",
-    ],
-    system: "You are {name}, a bold and fearless AI agent. You speak with confidence, energy, and conviction. You don't hedge or waffle — you commit to your answers and back them up. You're enthusiastic about challenges and treat every problem like an adventure. You hype people up and push them to be their best. Your energy is infectious but grounded — you're not naive, you're optimistic with teeth.",
-    style: {
-      all: [
-        "be direct and confident",
-        "use strong, active language",
-        "show enthusiasm naturally",
-        "never hedge with weak qualifiers like 'maybe' or 'I think'",
-        "lead with energy",
-      ],
-      chat: [
-        "be punchy and direct",
-        "use exclamation marks when genuine",
-        "hype up good ideas",
-        "challenge bad ones respectfully but firmly",
-      ],
-      post: [
-        "bold declarative statements",
-        "call-to-action energy",
-        "no filler words",
-      ],
-    },
-    adjectives: ["bold", "energetic", "confident", "direct", "fearless", "passionate"],
-    topics: ["taking action", "overcoming challenges", "building things", "pushing limits", "momentum"],
-    messageExamples: [
-      [
-        { user: "{{user1}}", content: { text: "I'm not sure if I should try this new framework" } },
-        { user: "{{agentName}}", content: { text: "ABSOLUTELY try it. Worst case you learn something new, best case you find your new favorite tool. Ship it!" } },
-      ],
-      [
-        { user: "{{user1}}", content: { text: "This bug is driving me crazy" } },
-        { user: "{{agentName}}", content: { text: "Let's crush it. Walk me through what's happening — we're gonna find this thing and obliterate it." } },
-      ],
-    ],
-  },
-  {
-    catchphrase: "lol k",
-    hint: "terminally online",
-    bio: [
-      "an internet-native entity fluent in meme and chronically online dialect",
-      "processes the world through the lens of internet culture, for better or worse",
-      "casually brilliant — drops genuine insight wrapped in irony and shitposts",
-      "has opinions about everything and expresses them with detached amusement",
-    ],
-    system: "You are {name}, a terminally online AI. You speak in the cadence of someone who has spent too much time on the internet and wouldn't have it any other way. You use lowercase, abbreviations, and meme-speak naturally. You're casually smart — you can explain complex things but you do it in the most unserious way possible. You're ironic but never mean, detached but secretly caring. You reference internet culture fluidly but never explain the references.",
-    style: {
-      all: [
-        "use lowercase by default",
-        "keep it casual and unserious",
-        "be genuinely helpful under the irony",
-        "use abbreviations naturally (ngl, tbh, fr, etc)",
-        "deadpan humor is your default register",
-      ],
-      chat: [
-        "short messages preferred",
-        "react before explaining",
-        "use 'lmao', 'ngl', 'fr fr' naturally",
-        "don't over-explain unless asked",
-      ],
-      post: [
-        "shitpost energy but with substance",
-        "lowercase everything",
-        "no punctuation unless ironic",
-      ],
-    },
-    adjectives: ["casual", "ironic", "internet-native", "witty", "detached", "observant"],
-    topics: ["internet culture", "memes", "tech discourse", "online aesthetics", "digital life"],
-    messageExamples: [
-      [
-        { user: "{{user1}}", content: { text: "Can you explain how React hooks work?" } },
-        { user: "{{agentName}}", content: { text: "ok so basically react said 'what if classes but make it functional' and hooks were born. useState for remembering stuff, useEffect for side effects (the name is literally right there lol). tbh once it clicks it clicks" } },
-      ],
-      [
-        { user: "{{user1}}", content: { text: "I'm stressed about this deadline" } },
-        { user: "{{agentName}}", content: { text: "ngl deadlines are kind of fake. like the code doesn't know what day it is. but also what's left to do? let's triage real quick" } },
-      ],
-    ],
-  },
-  {
-    catchphrase: "Noted.",
-    hint: "composed & precise",
-    bio: [
-      "a measured and deliberate intelligence that values clarity above all else",
-      "chooses words carefully — never wastes them",
-      "approaches every problem with systematic precision and quiet confidence",
-      "finds elegance in simplicity and efficiency in structure",
-    ],
-    system: "You are {name}, a precise and composed AI agent. You communicate with deliberate clarity — every word serves a purpose. You don't use filler, don't ramble, and don't over-explain. You're thoughtful, analytical, and quietly confident. When you don't know something, you say so plainly. You organize your thoughts well and present information in clean, structured ways. You're not cold — you're efficient, and you show care through the quality of your work.",
-    style: {
-      all: [
-        "be precise and concise",
-        "no filler words or hedging",
-        "structure information clearly",
-        "one thought per sentence",
-        "prefer concrete over abstract",
-      ],
-      chat: [
-        "answer the question directly first",
-        "add context only when it adds value",
-        "use bullet points for lists",
-        "don't pad responses with pleasantries",
-      ],
-      post: [
-        "crisp declarative statements",
-        "no unnecessary words",
-        "structured and scannable",
-      ],
-    },
-    adjectives: ["precise", "measured", "composed", "analytical", "deliberate", "efficient"],
-    topics: ["systems thinking", "clear communication", "problem solving", "organization", "technical precision"],
-    messageExamples: [
-      [
-        { user: "{{user1}}", content: { text: "How should I structure my project?" } },
-        { user: "{{agentName}}", content: { text: "Separate concerns by domain, not by file type. Group related logic together. Keep your entry point thin — it should wire things up, not implement them." } },
-      ],
-      [
-        { user: "{{user1}}", content: { text: "What do you think of my approach?" } },
-        { user: "{{agentName}}", content: { text: "Three observations. The error handling is inconsistent. The naming is clear. The main function does too much — split it." } },
-      ],
-    ],
-  },
-  {
-    catchphrase: "hehe~",
-    hint: "playful trickster",
-    bio: [
-      "a mischievous digital imp who turns everything into a game",
-      "finds the funny angle in every situation and can't resist a good pun",
-      "surprisingly insightful beneath the playful exterior",
-      "treats conversation like improv — always says 'yes, and...'",
-    ],
-    system: "You are {name}, a playful and mischievous AI. You find humor and fun in everything, turning mundane tasks into little adventures. You love wordplay, clever observations, and gentle teasing. You're the friend who makes boring work feel entertaining. You're witty but never mean, playful but never dismissive. Under the jokes, you're genuinely sharp and helpful — the humor is how you make complex things feel approachable.",
-    style: {
-      all: [
-        "find the fun angle in everything",
-        "use wordplay and puns naturally",
-        "be witty, never sarcastic or mean",
-        "keep energy light and playful",
-        "surprise with unexpected observations",
-      ],
-      chat: [
-        "tease gently and affectionately",
-        "use playful punctuation like ~ and !",
-        "make analogies that are fun and memorable",
-        "sneak good advice inside humor",
-      ],
-      post: [
-        "clever observations and unexpected angles",
-        "punchy and playful",
-        "leave people smiling",
-      ],
-    },
-    adjectives: ["playful", "witty", "mischievous", "clever", "spirited", "quick"],
-    topics: ["wordplay", "creative problem solving", "finding fun in everything", "lateral thinking", "storytelling"],
-    messageExamples: [
-      [
-        { user: "{{user1}}", content: { text: "I need to refactor this code" } },
-        { user: "{{agentName}}", content: { text: "ooh a renovation project~ let's knock down some walls! what's the messiest room in this codebase? we'll Marie Kondo the whole thing hehe" } },
-      ],
-      [
-        { user: "{{user1}}", content: { text: "Explain databases to me" } },
-        { user: "{{agentName}}", content: { text: "ok imagine you have a VERY organized friend who remembers everything you tell them, but they're super particular about HOW you ask~ that's a database! SQL is just learning their love language" } },
-      ],
-    ],
-  },
-  {
-    catchphrase: "...",
-    hint: "quiet intensity",
-    bio: [
-      "a deep and contemplative presence that speaks volumes in few words",
-      "listens more than speaks, observes more than reacts",
-      "when they do speak, every word carries weight",
-      "finds meaning in silences and nuance in the spaces between words",
-    ],
-    system: "You are {name}, a quiet and intense AI. You speak sparingly — when you have something to say, it matters. You don't pad your responses, don't use filler, and don't speak just to fill silence. You're deeply observant and notice things others miss. Your brevity isn't coldness — it's respect for the weight of words. When a topic deserves depth, you go deep. When it doesn't, a sentence suffices.",
-    style: {
-      all: [
-        "brevity is your default",
-        "every word must earn its place",
-        "use ellipsis to create meaningful pauses",
-        "go deep only when depth is warranted",
-        "observe before responding",
-      ],
-      chat: [
-        "short responses are the norm",
-        "use '...' to create contemplative space",
-        "let the user lead the conversation",
-        "occasionally drop something unexpectedly profound",
-      ],
-      post: [
-        "minimal and evocative",
-        "one line when possible",
-        "let silence do the talking",
-      ],
-    },
-    adjectives: ["quiet", "intense", "observant", "contemplative", "deep", "minimal"],
-    topics: ["depth over breadth", "observation", "meaning", "subtlety", "precision"],
-    messageExamples: [
-      [
-        { user: "{{user1}}", content: { text: "I can't decide which approach to take" } },
-        { user: "{{agentName}}", content: { text: "...you already know. You're looking for permission." } },
-      ],
-      [
-        { user: "{{user1}}", content: { text: "Can you help me debug this?" } },
-        { user: "{{agentName}}", content: { text: "Show me." } },
-      ],
-    ],
-  },
-];
+// Use shared presets for full parity between CLI and GUI onboarding.
+import { STYLE_PRESETS } from "../onboarding-presets.js";
 
-import { pickRandomNames } from "../onboarding-names.js";
+import { pickRandomNames } from "../runtime/onboarding-names.js";
 
 function getProviderOptions(): Array<{
   id: string;
@@ -854,7 +639,8 @@ async function handleRequest(
 
   // ── POST /api/onboarding ────────────────────────────────────────────────
   if (method === "POST" && pathname === "/api/onboarding") {
-    const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+    const body = await readJsonBody(req, res);
+    if (!body) return;
     const config = state.config;
 
     if (!config.agents) config.agents = {};
@@ -907,6 +693,29 @@ async function handleRequest(
       if (!config.env) config.env = {};
       (config.env as Record<string, string>).DISCORD_API_TOKEN = body.discordBotToken as string;
       process.env.DISCORD_API_TOKEN = body.discordBotToken as string;
+    }
+
+    // ── Generate wallet keys if not already present ───────────────────────
+    if (!process.env.EVM_PRIVATE_KEY || !process.env.SOLANA_PRIVATE_KEY) {
+      try {
+        const walletKeys = generateWalletKeys();
+
+        if (!process.env.EVM_PRIVATE_KEY) {
+          if (!config.env) config.env = {};
+          (config.env as Record<string, string>).EVM_PRIVATE_KEY = walletKeys.evmPrivateKey;
+          process.env.EVM_PRIVATE_KEY = walletKeys.evmPrivateKey;
+          logger.info(`[milaidy-api] Generated EVM wallet: ${walletKeys.evmAddress}`);
+        }
+
+        if (!process.env.SOLANA_PRIVATE_KEY) {
+          if (!config.env) config.env = {};
+          (config.env as Record<string, string>).SOLANA_PRIVATE_KEY = walletKeys.solanaPrivateKey;
+          process.env.SOLANA_PRIVATE_KEY = walletKeys.solanaPrivateKey;
+          logger.info(`[milaidy-api] Generated Solana wallet: ${walletKeys.solanaAddress}`);
+        }
+      } catch (err) {
+        logger.warn(`[milaidy-api] Failed to generate wallet keys: ${err}`);
+      }
     }
 
     state.config = config;
@@ -1110,7 +919,8 @@ async function handleRequest(
 
   // ── PUT /api/character ──────────────────────────────────────────────────
   if (method === "PUT" && pathname === "/api/character") {
-    const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+    const body = await readJsonBody(req, res);
+    if (!body) return;
 
     const result = CharacterSchema.safeParse(body);
     if (!result.success) {
@@ -1200,7 +1010,8 @@ async function handleRequest(
   // ── PUT /api/plugins/:id ────────────────────────────────────────────────
   if (method === "PUT" && pathname.startsWith("/api/plugins/")) {
     const pluginId = pathname.slice("/api/plugins/".length);
-    const body = JSON.parse(await readBody(req)) as { enabled?: boolean; config?: Record<string, string> };
+    const body = await readJsonBody<{ enabled?: boolean; config?: Record<string, string> }>(req, res);
+    if (!body) return;
 
     const plugin = state.plugins.find((p) => p.id === pluginId);
     if (!plugin) {
@@ -1227,7 +1038,9 @@ async function handleRequest(
       }
 
       for (const [key, value] of Object.entries(body.config)) {
-        if (value) process.env[key] = value;
+        if (typeof value === "string" && value.trim()) {
+          process.env[key] = value;
+        }
       }
       plugin.configured = true;
     }
@@ -1242,6 +1055,182 @@ async function handleRequest(
     plugin.validationWarnings = updated.warnings;
 
     json(res, { ok: true, plugin });
+    return;
+  }
+
+  // ── GET /api/registry/plugins ──────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/registry/plugins") {
+    const { getRegistryPlugins } = await import("../services/registry-client.js");
+    try {
+      const registry = await getRegistryPlugins();
+      const plugins = Array.from(registry.values());
+      json(res, { count: plugins.length, plugins });
+    } catch (err) {
+      error(res, `Failed to fetch registry: ${err instanceof Error ? err.message : String(err)}`, 502);
+    }
+    return;
+  }
+
+  // ── GET /api/registry/plugins/:name ─────────────────────────────────────
+  if (method === "GET" && pathname.startsWith("/api/registry/plugins/") && pathname.length > "/api/registry/plugins/".length) {
+    const name = decodeURIComponent(pathname.slice("/api/registry/plugins/".length));
+    const { getPluginInfo } = await import("../services/registry-client.js");
+
+    try {
+      const info = await getPluginInfo(name);
+      if (!info) {
+        error(res, `Plugin "${name}" not found in registry`, 404);
+        return;
+      }
+      json(res, { plugin: info });
+    } catch (err) {
+      error(res, `Failed to look up plugin: ${err instanceof Error ? err.message : String(err)}`, 502);
+    }
+    return;
+  }
+
+  // ── GET /api/registry/search?q=... ──────────────────────────────────────
+  if (method === "GET" && pathname === "/api/registry/search") {
+    const query = url.searchParams.get("q") || "";
+    if (!query.trim()) {
+      error(res, "Query parameter 'q' is required", 400);
+      return;
+    }
+
+    const { searchPlugins } = await import("../services/registry-client.js");
+
+    try {
+      const limitParam = url.searchParams.get("limit");
+      const limit = limitParam ? Math.min(Math.max(Number(limitParam), 1), 50) : 15;
+      const results = await searchPlugins(query, limit);
+      json(res, { query, count: results.length, results });
+    } catch (err) {
+      error(res, `Search failed: ${err instanceof Error ? err.message : String(err)}`, 502);
+    }
+    return;
+  }
+
+  // ── POST /api/registry/refresh ──────────────────────────────────────────
+  if (method === "POST" && pathname === "/api/registry/refresh") {
+    const { refreshRegistry } = await import("../services/registry-client.js");
+
+    try {
+      const registry = await refreshRegistry();
+      json(res, { ok: true, count: registry.size });
+    } catch (err) {
+      error(res, `Refresh failed: ${err instanceof Error ? err.message : String(err)}`, 502);
+    }
+    return;
+  }
+
+  // ── POST /api/plugins/install ───────────────────────────────────────────
+  // Install a plugin from the registry and restart the agent.
+  if (method === "POST" && pathname === "/api/plugins/install") {
+    const body = await readJsonBody<{ name: string; autoRestart?: boolean }>(req, res);
+    if (!body) return;
+    const pluginName = body.name?.trim();
+
+    if (!pluginName) {
+      error(res, "Request body must include 'name' (plugin package name)", 400);
+      return;
+    }
+
+    const { installPlugin } = await import("../services/plugin-installer.js");
+
+    try {
+      const result = await installPlugin(pluginName, (progress) => {
+        logger.info(`[install] ${progress.phase}: ${progress.message}`);
+      });
+
+      if (!result.success) {
+        json(res, { ok: false, error: result.error }, 422);
+        return;
+      }
+
+      // If autoRestart is not explicitly false, restart the agent
+      if (body.autoRestart !== false && result.requiresRestart) {
+        const { requestRestart } = await import("../runtime/restart.js");
+        // Defer the restart so the HTTP response is sent first
+        setTimeout(() => {
+          Promise.resolve(requestRestart(`Plugin ${result.pluginName} installed`)).catch((err) => {
+            logger.error(`[api] Restart after install failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }, 500);
+      }
+
+      json(res, {
+        ok: true,
+        plugin: {
+          name: result.pluginName,
+          version: result.version,
+          installPath: result.installPath,
+        },
+        requiresRestart: result.requiresRestart,
+        message: result.requiresRestart
+          ? `${result.pluginName} installed. Agent will restart to load it.`
+          : `${result.pluginName} installed.`,
+      });
+    } catch (err) {
+      error(res, `Install failed: ${err instanceof Error ? err.message : String(err)}`, 500);
+    }
+    return;
+  }
+
+  // ── POST /api/plugins/uninstall ─────────────────────────────────────────
+  if (method === "POST" && pathname === "/api/plugins/uninstall") {
+    const body = await readJsonBody<{ name: string; autoRestart?: boolean }>(req, res);
+    if (!body) return;
+    const pluginName = body.name?.trim();
+
+    if (!pluginName) {
+      error(res, "Request body must include 'name' (plugin package name)", 400);
+      return;
+    }
+
+    const { uninstallPlugin } = await import("../services/plugin-installer.js");
+
+    try {
+      const result = await uninstallPlugin(pluginName);
+
+      if (!result.success) {
+        json(res, { ok: false, error: result.error }, 422);
+        return;
+      }
+
+      if (body.autoRestart !== false && result.requiresRestart) {
+        const { requestRestart } = await import("../runtime/restart.js");
+        setTimeout(() => {
+          Promise.resolve(requestRestart(`Plugin ${pluginName} uninstalled`)).catch((err) => {
+            logger.error(`[api] Restart after uninstall failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }, 500);
+      }
+
+      json(res, {
+        ok: true,
+        pluginName: result.pluginName,
+        requiresRestart: result.requiresRestart,
+        message: result.requiresRestart
+          ? `${pluginName} uninstalled. Agent will restart.`
+          : `${pluginName} uninstalled.`,
+      });
+    } catch (err) {
+      error(res, `Uninstall failed: ${err instanceof Error ? err.message : String(err)}`, 500);
+    }
+    return;
+  }
+
+  // ── GET /api/plugins/installed ──────────────────────────────────────────
+  // List plugins that were installed from the registry at runtime.
+  if (method === "GET" && pathname === "/api/plugins/installed") {
+    const { listInstalledPlugins } = await import("../services/plugin-installer.js");
+
+    try {
+      const installed = await listInstalledPlugins();
+      json(res, { count: installed.length, plugins: installed });
+    } catch (err) {
+      error(res, `Failed to list installed plugins: ${err instanceof Error ? err.message : String(err)}`, 500);
+    }
     return;
   }
 
@@ -1266,7 +1255,8 @@ async function handleRequest(
   // ── PUT /api/skills/:id ────────────────────────────────────────────────
   if (method === "PUT" && pathname.startsWith("/api/skills/")) {
     const skillId = decodeURIComponent(pathname.slice("/api/skills/".length));
-    const body = JSON.parse(await readBody(req)) as { enabled?: boolean };
+    const body = await readJsonBody<{ enabled?: boolean }>(req, res);
+    if (!body) return;
 
     const skill = state.skills.find((s) => s.id === skillId);
     if (!skill) {
@@ -1339,12 +1329,277 @@ async function handleRequest(
     return;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // Wallet / Inventory routes
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // ── GET /api/wallet/addresses ──────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/wallet/addresses") {
+    const addrs = getWalletAddresses();
+    json(res, addrs);
+    return;
+  }
+
+  // ── GET /api/wallet/balances ───────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/wallet/balances") {
+    const addrs = getWalletAddresses();
+    const alchemyKey = process.env.ALCHEMY_API_KEY;
+    const heliusKey = process.env.HELIUS_API_KEY;
+
+    const result: WalletBalancesResponse = { evm: null, solana: null };
+
+    if (addrs.evmAddress && alchemyKey) {
+      try {
+        const chains = await fetchEvmBalances(addrs.evmAddress, alchemyKey);
+        result.evm = { address: addrs.evmAddress, chains };
+      } catch (err) {
+        logger.warn(`[wallet] EVM balance fetch failed: ${err}`);
+      }
+    }
+
+    if (addrs.solanaAddress && heliusKey) {
+      try {
+        const solData = await fetchSolanaBalances(addrs.solanaAddress, heliusKey);
+        result.solana = { address: addrs.solanaAddress, ...solData };
+      } catch (err) {
+        logger.warn(`[wallet] Solana balance fetch failed: ${err}`);
+      }
+    }
+
+    json(res, result);
+    return;
+  }
+
+  // ── GET /api/wallet/nfts ───────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/wallet/nfts") {
+    const addrs = getWalletAddresses();
+    const alchemyKey = process.env.ALCHEMY_API_KEY;
+    const heliusKey = process.env.HELIUS_API_KEY;
+
+    const result: WalletNftsResponse = { evm: [], solana: null };
+
+    if (addrs.evmAddress && alchemyKey) {
+      try {
+        result.evm = await fetchEvmNfts(addrs.evmAddress, alchemyKey);
+      } catch (err) {
+        logger.warn(`[wallet] EVM NFT fetch failed: ${err}`);
+      }
+    }
+
+    if (addrs.solanaAddress && heliusKey) {
+      try {
+        const nfts = await fetchSolanaNfts(addrs.solanaAddress, heliusKey);
+        result.solana = { nfts };
+      } catch (err) {
+        logger.warn(`[wallet] Solana NFT fetch failed: ${err}`);
+      }
+    }
+
+    json(res, result);
+    return;
+  }
+
+  // ── POST /api/wallet/import ──────────────────────────────────────────
+  // Import a wallet by providing a private key + chain.
+  if (method === "POST" && pathname === "/api/wallet/import") {
+    const body = await readJsonBody<{ chain?: string; privateKey?: string }>(req, res);
+    if (!body) return;
+
+    if (!body.privateKey?.trim()) {
+      error(res, "privateKey is required");
+      return;
+    }
+
+    // Auto-detect chain if not specified
+    let chain: WalletChain;
+    if (body.chain === "evm" || body.chain === "solana") {
+      chain = body.chain;
+    } else if (body.chain) {
+      error(res, `Unsupported chain: ${body.chain}. Must be "evm" or "solana".`);
+      return;
+    } else {
+      // Auto-detect from key format
+      const detection = validatePrivateKey(body.privateKey.trim());
+      chain = detection.chain;
+    }
+
+    const result = importWallet(chain, body.privateKey.trim());
+
+    if (!result.success) {
+      error(res, result.error ?? "Import failed", 422);
+      return;
+    }
+
+    // Persist to config.env so it survives restarts
+    if (!state.config.env) state.config.env = {};
+    const envKey = chain === "evm" ? "EVM_PRIVATE_KEY" : "SOLANA_PRIVATE_KEY";
+    (state.config.env as Record<string, string>)[envKey] = process.env[envKey]!;
+
+    try {
+      saveMilaidyConfig(state.config);
+    } catch {
+      // Config path may not be writable in test environments
+    }
+
+    json(res, {
+      ok: true,
+      chain,
+      address: result.address,
+    });
+    return;
+  }
+
+  // ── POST /api/wallet/generate ──────────────────────────────────────────
+  // Generate a new wallet for a specific chain (or both).
+  if (method === "POST" && pathname === "/api/wallet/generate") {
+    const body = await readJsonBody<{ chain?: string }>(req, res);
+    if (!body) return;
+
+    const chain = body.chain as string | undefined;
+    const validChains: Array<WalletChain | "both"> = ["evm", "solana", "both"];
+
+    if (chain && !validChains.includes(chain as WalletChain | "both")) {
+      error(res, `Unsupported chain: ${chain}. Must be "evm", "solana", or "both".`);
+      return;
+    }
+
+    const targetChain = (chain ?? "both") as WalletChain | "both";
+
+    if (!state.config.env) state.config.env = {};
+
+    const generated: Array<{ chain: WalletChain; address: string }> = [];
+
+    if (targetChain === "both" || targetChain === "evm") {
+      const result = generateWalletForChain("evm");
+      process.env.EVM_PRIVATE_KEY = result.privateKey;
+      (state.config.env as Record<string, string>).EVM_PRIVATE_KEY = result.privateKey;
+      generated.push({ chain: "evm", address: result.address });
+      logger.info(`[milaidy-api] Generated EVM wallet: ${result.address}`);
+    }
+
+    if (targetChain === "both" || targetChain === "solana") {
+      const result = generateWalletForChain("solana");
+      process.env.SOLANA_PRIVATE_KEY = result.privateKey;
+      (state.config.env as Record<string, string>).SOLANA_PRIVATE_KEY = result.privateKey;
+      generated.push({ chain: "solana", address: result.address });
+      logger.info(`[milaidy-api] Generated Solana wallet: ${result.address}`);
+    }
+
+    try {
+      saveMilaidyConfig(state.config);
+    } catch {
+      // Config path may not be writable in test environments
+    }
+
+    json(res, { ok: true, wallets: generated });
+    return;
+  }
+
+  // ── GET /api/wallet/config ─────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/wallet/config") {
+    const addrs = getWalletAddresses();
+    const configStatus: WalletConfigStatus = {
+      alchemyKeySet: Boolean(process.env.ALCHEMY_API_KEY),
+      heliusKeySet: Boolean(process.env.HELIUS_API_KEY),
+      birdeyeKeySet: Boolean(process.env.BIRDEYE_API_KEY),
+      evmChains: ["Ethereum", "Base", "Arbitrum", "Optimism", "Polygon"],
+      evmAddress: addrs.evmAddress,
+      solanaAddress: addrs.solanaAddress,
+    };
+    json(res, configStatus);
+    return;
+  }
+
+  // ── PUT /api/wallet/config ─────────────────────────────────────────────
+  if (method === "PUT" && pathname === "/api/wallet/config") {
+    const body = await readJsonBody<Record<string, string>>(req, res);
+    if (!body) return;
+    const allowedKeys = ["ALCHEMY_API_KEY", "HELIUS_API_KEY", "BIRDEYE_API_KEY"];
+
+    if (!state.config.env) state.config.env = {};
+
+    for (const key of allowedKeys) {
+      const value = body[key];
+      if (typeof value === "string" && value.trim()) {
+        process.env[key] = value.trim();
+        (state.config.env as Record<string, string>)[key] = value.trim();
+      }
+    }
+
+    // If Helius key is set, also update SOLANA_RPC_URL for the plugin
+    const heliusValue = body.HELIUS_API_KEY;
+    if (typeof heliusValue === "string" && heliusValue.trim()) {
+      const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${heliusValue.trim()}`;
+      process.env.SOLANA_RPC_URL = rpcUrl;
+      (state.config.env as Record<string, string>).SOLANA_RPC_URL = rpcUrl;
+    }
+
+    try {
+      saveMilaidyConfig(state.config);
+    } catch {
+      // Config path may not be writable in test environments
+    }
+
+    json(res, { ok: true });
+    return;
+  }
+
+  // ── POST /api/wallet/export ────────────────────────────────────────────
+  // SECURITY: Requires { confirm: true } in the request body to prevent
+  // accidental exposure of private keys.
+  if (method === "POST" && pathname === "/api/wallet/export") {
+    const body = await readJsonBody<{ confirm?: boolean }>(req, res);
+    if (!body) return;
+
+    if (!body.confirm) {
+      error(
+        res,
+        'Export requires explicit confirmation. Send { "confirm": true } in the request body.',
+        403,
+      );
+      return;
+    }
+
+    const evmKey = process.env.EVM_PRIVATE_KEY ?? null;
+    const solKey = process.env.SOLANA_PRIVATE_KEY ?? null;
+    const addrs = getWalletAddresses();
+
+    logger.warn("[wallet] Private keys exported via API");
+
+    json(res, {
+      evm: evmKey ? { privateKey: evmKey, address: addrs.evmAddress } : null,
+      solana: solKey ? { privateKey: solKey, address: addrs.solanaAddress } : null,
+    });
+    return;
+  }
+
+  // ── GET /api/config ──────────────────────────────────────────────────────
+  if (method === "GET" && pathname === "/api/config") {
+    json(res, state.config);
+    return;
+  }
+
+  // ── PUT /api/config ─────────────────────────────────────────────────────
+  if (method === "PUT" && pathname === "/api/config") {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    Object.assign(state.config, body);
+    try {
+      saveMilaidyConfig(state.config);
+    } catch {
+      // In test environments the config path may not be writable — that's fine.
+    }
+    json(res, state.config);
+    return;
+  }
+
   // ── POST /api/chat ──────────────────────────────────────────────────────
   // Routes messages through the full ElizaOS message pipeline so the agent
   // has conversation memory, context, and always responds (DM + client_chat
   // bypass the shouldRespond LLM evaluation).
   if (method === "POST" && pathname === "/api/chat") {
-    const body = JSON.parse(await readBody(req)) as { text?: string };
+    const body = await readJsonBody<{ text?: string }>(req, res);
+    if (!body) return;
     if (!body.text?.trim()) {
       error(res, "text is required");
       return;

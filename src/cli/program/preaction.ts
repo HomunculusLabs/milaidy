@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { isTruthyEnvValue, setVerbose } from "../../globals.js";
+import { isTruthyEnvValue, setVerbose } from "../../utils/globals.js";
 import { getCommandPath, getVerboseFlag, hasHelpOrVersion } from "../argv.js";
 import { emitCliBanner } from "../banner.js";
 import { resolveCliName } from "../cli-name.js";

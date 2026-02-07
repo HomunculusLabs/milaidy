@@ -37,7 +37,7 @@ test.describe("Navigation", () => {
     await page.getByRole("link", { name: "Config" }).click();
 
     await expect(page).toHaveURL(/\/config/);
-    await expect(page.getByText("Edit ~/.milaidy/milaidy.json")).toBeVisible();
+    await expect(page.getByText("Agent settings and configuration")).toBeVisible();
   });
 
   test("navigates to logs tab", async ({ page }) => {
@@ -62,7 +62,7 @@ test.describe("Navigation", () => {
     await mockApi(page, { onboardingComplete: true, agentState: "running" });
     await page.goto("/config");
 
-    await expect(page.getByText("Edit ~/.milaidy/milaidy.json")).toBeVisible();
+    await expect(page.getByText("Agent settings and configuration")).toBeVisible();
   });
 
   test("handles browser back button", async ({ page }) => {

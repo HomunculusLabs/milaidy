@@ -22,21 +22,19 @@ async function isPortListening(port: number, host = "127.0.0.1", timeoutMs = 800
   });
 }
 
-function openInBrowser(url: string): void {
-  import("node:child_process").then(({ exec }) => {
-    const openCmd =
-      process.platform === "darwin"
-        ? "open"
-        : process.platform === "win32"
-          ? "start"
-          : "xdg-open";
-    exec(`${openCmd} ${url}`, (err) => {
-      if (err) {
-        console.log(theme.warn("Could not open browser automatically."));
-        console.log(`${theme.muted("Open manually:")} ${url}`);
-      }
-    });
+async function openInBrowser(url: string): Promise<void> {
+  const { spawn } = await import("node:child_process");
+  const isWin = process.platform === "win32";
+  const isMac = process.platform === "darwin";
+  const bin = isMac ? "open" : isWin ? "cmd" : "xdg-open";
+  // On Windows, `start` is a cmd built-in; the empty-string arg is the window title.
+  const args = isWin ? ["/c", "start", "", url] : [url];
+  const child = spawn(bin, args, { stdio: "ignore" });
+  child.on("error", () => {
+    console.log(theme.warn("Could not open browser automatically."));
+    console.log(`${theme.muted("Open manually:")} ${url}`);
   });
+  child.unref();
 }
 
 const DEFAULT_PORT = 2138;
@@ -49,7 +47,10 @@ export function registerDashboardCommand(program: Command) {
     .option("--port <port>", "Server port to check", String(DEFAULT_PORT))
     .option("--url <url>", "Server URL (overrides --port)")
     .action(async (opts: { port?: string; url?: string }) => {
-      const port = Number(opts.port ?? DEFAULT_PORT);
+      const rawPort = Number(opts.port ?? DEFAULT_PORT);
+      const port = Number.isFinite(rawPort) && rawPort > 0 && rawPort <= 65535
+        ? rawPort
+        : DEFAULT_PORT;
 
       if (opts.url) {
         console.log(`${theme.muted("→")} Opening Control UI: ${opts.url}`);

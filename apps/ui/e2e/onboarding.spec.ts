@@ -81,8 +81,8 @@ test.describe("Onboarding Wizard", () => {
     await expect(firstProvider.getByText("Eliza Cloud")).toBeVisible();
     await expect(page.getByText("Anthropic")).toBeVisible();
     await expect(page.getByText("OpenAI")).toBeVisible();
-    await expect(page.getByText("Gemini")).toBeVisible();
-    await expect(page.getByText("Grok")).toBeVisible();
+    await expect(page.getByText("Gemini", { exact: true })).toBeVisible();
+    await expect(page.getByText("Grok", { exact: true })).toBeVisible();
   });
 
   test("shows API key input for non-cloud providers", async ({ page }) => {

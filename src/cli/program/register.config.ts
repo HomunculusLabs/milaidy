@@ -14,8 +14,9 @@ export function registerConfigCli(program: Command) {
       let milaidyConfig;
       try {
         milaidyConfig = loadMilaidyConfig();
-      } catch {
-        console.error("[milaidy] Could not load config.");
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error(`[milaidy] Could not load config: ${detail}`);
         process.exit(1);
       }
       const parts = key.split(".");
