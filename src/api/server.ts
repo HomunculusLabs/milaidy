@@ -225,6 +225,7 @@ function categorizePlugin(id: string): "ai-provider" | "connector" | "database" 
     "openai", "anthropic", "groq", "xai", "ollama", "openrouter",
     "google-genai", "local-ai", "vercel-ai-gateway", "deepseek",
     "together", "mistral", "cohere", "perplexity", "qwen", "minimax",
+    "zai",
   ];
   const connectors = [
     "telegram", "discord", "slack", "whatsapp", "signal", "imessage",
@@ -784,6 +785,8 @@ function getProviderOptions(): Array<{
     { id: "mistral", name: "Mistral", envKey: "MISTRAL_API_KEY", pluginName: "@elizaos/plugin-mistral", keyPrefix: null, description: "Mistral AI models." },
     { id: "together", name: "Together AI", envKey: "TOGETHER_API_KEY", pluginName: "@elizaos/plugin-together", keyPrefix: null, description: "Open-source model hosting." },
     { id: "ollama", name: "Ollama (local)", envKey: null, pluginName: "@elizaos/plugin-ollama", keyPrefix: null, description: "Local models, no API key needed." },
+    { id: "zai", name: "z.ai (GLM Coding Plan)", envKey: "ZAI_API_KEY", pluginName: "__local:plugin-zai", keyPrefix: null, description: "GLM models via z.ai Coding Plan." },
+    { id: "lmstudio", name: "LM Studio (local)", envKey: null, pluginName: "@elizaos/plugin-openai", keyPrefix: null, description: "Local models via LM Studio, no API key needed." },
   ];
 }
 

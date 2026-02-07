@@ -20,6 +20,7 @@ import {
   logger,
   stringToUuid,
   type Character,
+  type IAgentRuntime,
   type Plugin,
   type UUID,
 } from "@elizaos/core";
@@ -297,7 +298,7 @@ async function zaiMessagesAPI(
   if (data.content) {
     logger.debug(`[z.ai] content[0]: ${JSON.stringify(data.content?.[0])?.slice(0, 200)}`);
   } else {
-    logger.info(`[z.ai] Full response (no content field): ${rawBody.slice(0, 500)}`);
+    logger.debug(`[z.ai] Full response (no content field): ${rawBody.slice(0, 500)}`);
   }
 
   // Anthropic Messages API response shape:
@@ -343,24 +344,24 @@ function createZaiPlugin(): Plugin {
     return typeof v === "string" && v.length > 0 ? v : undefined;
   }
 
-  function getSetting(rt: any, key: string): string | undefined {
+  function getSetting(rt: IAgentRuntime, key: string): string | undefined {
     const v = rt.getSetting?.(key);
     return (typeof v === "string" && v.length > 0 ? v : undefined) ?? env(key);
   }
 
-  function getKey(rt: any): string { return getSetting(rt, "ZAI_API_KEY") ?? ""; }
-  function getBase(rt: any): string { return getSetting(rt, "ZAI_BASE_URL") ?? ZAI_BASE_URL; }
-  function getSmall(rt: any): string { return getSetting(rt, "ZAI_SMALL_MODEL") ?? ZAI_SMALL; }
-  function getLarge(rt: any): string { return getSetting(rt, "ZAI_LARGE_MODEL") ?? ZAI_LARGE; }
+  function getKey(rt: IAgentRuntime): string { return getSetting(rt, "ZAI_API_KEY") ?? ""; }
+  function getBase(rt: IAgentRuntime): string { return getSetting(rt, "ZAI_BASE_URL") ?? ZAI_BASE_URL; }
+  function getSmall(rt: IAgentRuntime): string { return getSetting(rt, "ZAI_SMALL_MODEL") ?? ZAI_SMALL; }
+  function getLarge(rt: IAgentRuntime): string { return getSetting(rt, "ZAI_LARGE_MODEL") ?? ZAI_LARGE; }
 
-  function emitUsage(rt: any, type: string, inp: number, out: number) {
+  function emitUsage(rt: IAgentRuntime, type: string, inp: number, out: number) {
     rt.emitEvent(EventType.MODEL_USED, {
       runtime: rt, source: "zai", type,
       tokens: { prompt: inp, completion: out, total: inp + out },
     });
   }
 
-  async function textGen(rt: any, params: any, model: string, type: string) {
+  async function textGen(rt: IAgentRuntime, params: { prompt: string; maxTokens?: number; temperature?: number; stopSequences?: string[] }, model: string, type: string) {
     logger.info(`[z.ai] ${type} model: ${model}`);
     const { text, inputTokens, outputTokens } = await zaiMessagesAPI(
       getBase(rt), getKey(rt),
@@ -377,7 +378,7 @@ function createZaiPlugin(): Plugin {
     return text;
   }
 
-  async function objGen(rt: any, params: any, model: string, type: string) {
+  async function objGen(rt: IAgentRuntime, params: { prompt: string; temperature?: number }, model: string, type: string) {
     logger.info(`[z.ai] ${type} model: ${model}`);
     const sys = rt.character?.system
       ? `${rt.character.system}\nYou must respond with valid JSON only. No markdown, no code blocks.`
@@ -414,7 +415,7 @@ function createZaiPlugin(): Plugin {
       ZAI_SMALL_MODEL: env("ZAI_SMALL_MODEL") ?? null,
       ZAI_LARGE_MODEL: env("ZAI_LARGE_MODEL") ?? null,
     },
-    async init(_config: any, rt: any) {
+    async init(_config: Record<string, string>, rt: IAgentRuntime) {
       const key = getSetting(rt, "ZAI_API_KEY");
       if (!key) {
         logger.warn("[z.ai] ZAI_API_KEY not set — z.ai will be limited");
@@ -423,10 +424,10 @@ function createZaiPlugin(): Plugin {
       logger.info(`[z.ai] Configured → ${getBase(rt)} (large: ${getLarge(rt)}, small: ${getSmall(rt)})`);
     },
     models: {
-      [ModelType.TEXT_SMALL]: async (rt: any, p: any) => textGen(rt, p, getSmall(rt), ModelType.TEXT_SMALL),
-      [ModelType.TEXT_LARGE]: async (rt: any, p: any) => textGen(rt, p, getLarge(rt), ModelType.TEXT_LARGE),
-      [ModelType.OBJECT_SMALL]: async (rt: any, p: any) => objGen(rt, p, getSmall(rt), ModelType.OBJECT_SMALL),
-      [ModelType.OBJECT_LARGE]: async (rt: any, p: any) => objGen(rt, p, getLarge(rt), ModelType.OBJECT_LARGE),
+      [ModelType.TEXT_SMALL]: async (rt: IAgentRuntime, p: { prompt: string; maxTokens?: number; temperature?: number; stopSequences?: string[] }) => textGen(rt, p, getSmall(rt), ModelType.TEXT_SMALL),
+      [ModelType.TEXT_LARGE]: async (rt: IAgentRuntime, p: { prompt: string; maxTokens?: number; temperature?: number; stopSequences?: string[] }) => textGen(rt, p, getLarge(rt), ModelType.TEXT_LARGE),
+      [ModelType.OBJECT_SMALL]: async (rt: IAgentRuntime, p: { prompt: string; temperature?: number }) => objGen(rt, p, getSmall(rt), ModelType.OBJECT_SMALL),
+      [ModelType.OBJECT_LARGE]: async (rt: IAgentRuntime, p: { prompt: string; temperature?: number }) => objGen(rt, p, getLarge(rt), ModelType.OBJECT_LARGE),
     },
   };
 }
@@ -524,6 +525,27 @@ export function applyCloudConfigToEnv(config: MilaidyConfig): void {
 }
 
 /**
+ * Bridge LM Studio env vars into the OpenAI plugin's expected keys.
+ *
+ * When `LMSTUDIO_BASE_URL` is set (either via config.env or externally),
+ * ensure `OPENAI_BASE_URL` and `OPENAI_API_KEY` are populated so
+ * `@elizaos/plugin-openai` can discover the local server without
+ * requiring the user to duplicate configuration.
+ */
+/** @internal Exported for testing. */
+export function applyLmStudioConfigToEnv(): void {
+  const lmUrl = process.env.LMSTUDIO_BASE_URL;
+  if (!lmUrl || !lmUrl.trim()) return;
+
+  if (!process.env.OPENAI_BASE_URL) {
+    process.env.OPENAI_BASE_URL = lmUrl;
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    process.env.OPENAI_API_KEY = "lm-studio";
+  }
+}
+
+/**
  * Build an ElizaOS Character from the Milaidy config.
  *
  * Resolves the agent name from `config.agents.list` (first entry) or
@@ -564,6 +586,11 @@ export function buildCharacterFromConfig(config: MilaidyConfig): Character {
     "MSTEAMS_APP_PASSWORD",
     "MATTERMOST_BOT_TOKEN",
     "MATTERMOST_BASE_URL",
+    // z.ai GLM Coding Plan
+    "ZAI_API_KEY",
+    "ZAI_BASE_URL",
+    // LM Studio
+    "LMSTUDIO_BASE_URL",
     // ElizaCloud secrets
     "ELIZAOS_CLOUD_API_KEY",
     "ELIZAOS_CLOUD_BASE_URL",
@@ -1065,18 +1092,6 @@ async function runFirstTimeSetup(config: MilaidyConfig): Promise<MilaidyConfig> 
           }
 
           providerApiKey = lmstudioUrl.trim() || "http://localhost:1234";
-        } else if (chosen.id === "zai") {
-          // z.ai GLM Coding Plan — uses our forked Anthropic-compatible plugin
-          const apiKeyInput = await clack.password({
-            message: "Paste your z.ai API key:",
-          });
-
-          if (clack.isCancel(apiKeyInput)) {
-            clack.cancel("Maybe next time!");
-            process.exit(0);
-          }
-
-          providerApiKey = apiKeyInput.trim();
         } else {
           const apiKeyInput = await clack.password({
             message: `Paste your ${chosen.label} API key:`,
@@ -1186,6 +1201,9 @@ export async function startEliza(opts?: StartElizaOptions): Promise<AgentRuntime
 
   // 2b. Propagate cloud config into process.env for ElizaCloud plugin
   applyCloudConfigToEnv(config);
+
+  // 2c. Bridge LM Studio env vars into OpenAI plugin's expected keys
+  applyLmStudioConfigToEnv();
 
   // 3. Build ElizaOS Character from Milaidy config
   const character = buildCharacterFromConfig(config);
