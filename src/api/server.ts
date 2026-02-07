@@ -784,9 +784,9 @@ function getProviderOptions(): Array<{
     { id: "deepseek", name: "DeepSeek", envKey: "DEEPSEEK_API_KEY", pluginName: "@elizaos/plugin-deepseek", keyPrefix: "sk-", description: "DeepSeek models." },
     { id: "mistral", name: "Mistral", envKey: "MISTRAL_API_KEY", pluginName: "@elizaos/plugin-mistral", keyPrefix: null, description: "Mistral AI models." },
     { id: "together", name: "Together AI", envKey: "TOGETHER_API_KEY", pluginName: "@elizaos/plugin-together", keyPrefix: null, description: "Open-source model hosting." },
-    { id: "ollama", name: "Ollama (local)", envKey: null, pluginName: "@elizaos/plugin-ollama", keyPrefix: null, description: "Local models, no API key needed." },
+    { id: "ollama", name: "Ollama (local)", envKey: "OLLAMA_BASE_URL", pluginName: "@elizaos/plugin-ollama", keyPrefix: null, description: "Local models, no API key needed." },
     { id: "zai", name: "z.ai (GLM Coding Plan)", envKey: "ZAI_API_KEY", pluginName: "__local:plugin-zai", keyPrefix: null, description: "GLM models via z.ai Coding Plan." },
-    { id: "lmstudio", name: "LM Studio (local)", envKey: null, pluginName: "@elizaos/plugin-openai", keyPrefix: null, description: "Local models via LM Studio, no API key needed." },
+    { id: "lmstudio", name: "LM Studio (local)", envKey: "LMSTUDIO_BASE_URL", pluginName: "@elizaos/plugin-openai", keyPrefix: null, description: "Local models via LM Studio, no API key needed." },
   ];
 }
 
@@ -879,8 +879,22 @@ async function handleRequest(
       if (!config.env) config.env = {};
       const providerOpt = getProviderOptions().find((p) => p.id === body.provider);
       if (providerOpt?.envKey) {
-        (config.env as Record<string, string>)[providerOpt.envKey] = body.providerApiKey as string;
-        process.env[providerOpt.envKey] = body.providerApiKey as string;
+        const envKey = providerOpt.envKey;
+        const value = String(body.providerApiKey).trim();
+
+        (config.env as Record<string, string>)[envKey] = value;
+        process.env[envKey] = value;
+
+        // LM Studio is an OpenAI-compatible local server.
+        // Persist the OpenAI plugin keys too so validation + restarts work without duplication.
+        if (envKey === "LMSTUDIO_BASE_URL") {
+          const envMap = config.env as Record<string, string>;
+          if (!envMap.OPENAI_BASE_URL) envMap.OPENAI_BASE_URL = value;
+          if (!envMap.OPENAI_API_KEY) envMap.OPENAI_API_KEY = "lm-studio";
+
+          if (!process.env.OPENAI_BASE_URL) process.env.OPENAI_BASE_URL = value;
+          if (!process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = "lm-studio";
+        }
       }
     }
 
