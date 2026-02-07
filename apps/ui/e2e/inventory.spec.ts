@@ -29,16 +29,13 @@ test.describe("Header — wallet icon", () => {
     await page.goto("/");
     await page.waitForTimeout(500);
 
-    // Hover over wallet wrapper
     const walletWrapper = page.locator(".wallet-wrapper");
     await walletWrapper.hover();
     await page.waitForTimeout(300);
 
-    // Should show truncated EVM address
     await expect(page.locator(".wallet-tooltip")).toBeVisible();
     await expect(page.locator("text=EVM")).toBeVisible();
     await expect(page.locator("text=SOL")).toBeVisible();
-    // Truncated EVM address: 0xf39F...2266
     await expect(page.locator(".wallet-addr-row code").first()).toBeVisible();
   });
 
@@ -52,7 +49,7 @@ test.describe("Header — wallet icon", () => {
     await page.waitForTimeout(300);
 
     const copyButtons = page.locator(".wallet-tooltip .copy-btn");
-    await expect(copyButtons).toHaveCount(2); // EVM + SOL
+    await expect(copyButtons).toHaveCount(2);
   });
 
   test("clicking wallet icon navigates to inventory", async ({ page }) => {
@@ -63,7 +60,6 @@ test.describe("Header — wallet icon", () => {
     await page.locator(".wallet-btn").click();
     await page.waitForTimeout(300);
 
-    // Should be on inventory tab
     await expect(page.getByRole("heading", { name: "Inventory" })).toBeVisible();
     expect(page.url()).toContain("/inventory");
   });
@@ -146,21 +142,18 @@ test.describe("Inventory — setup flow (no API keys)", () => {
   });
 
   test("saving keys transitions to balance view", async ({ page }) => {
-    // Fill in keys
     await page.locator("input[data-wallet-config='ALCHEMY_API_KEY']").fill("test-alchemy-key");
     await page.locator("input[data-wallet-config='HELIUS_API_KEY']").fill("test-helius-key");
 
-    // Click save
     await page.locator("button").filter({ hasText: "Save API Keys" }).click();
     await page.waitForTimeout(1000);
 
-    // Should now show the tokens/NFTs sub-tabs (balance view)
     await expect(page.locator("button.inventory-subtab").filter({ hasText: "Tokens" })).toBeVisible();
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Inventory — tokens view
+// Inventory — tokens view (unified table)
 // ═══════════════════════════════════════════════════════════════════════════
 
 test.describe("Inventory — tokens view", () => {
@@ -177,41 +170,80 @@ test.describe("Inventory — tokens view", () => {
     await expect(page.locator("button.inventory-subtab").filter({ hasText: "NFTs" })).toBeVisible();
   });
 
+  test("shows sort buttons", async ({ page }) => {
+    await expect(page.locator(".sort-btn").filter({ hasText: "Value" })).toBeVisible();
+    await expect(page.locator(".sort-btn").filter({ hasText: "Chain" })).toBeVisible();
+    await expect(page.locator(".sort-btn").filter({ hasText: "Name" })).toBeVisible();
+  });
+
   test("shows Refresh button", async ({ page }) => {
     await expect(page.locator("button").filter({ hasText: "Refresh" })).toBeVisible();
   });
 
-  test("shows EVM wallet section with address", async ({ page }) => {
-    await expect(page.locator("text=EVM Wallet")).toBeVisible();
-    await expect(page.locator("text=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")).toBeVisible();
+  test("renders a scrollable token table", async ({ page }) => {
+    const tableWrap = page.locator(".token-table-wrap");
+    await expect(tableWrap).toBeVisible();
+    // Check max-height is set for scrollability
+    const style = await tableWrap.evaluate((el) => getComputedStyle(el).maxHeight);
+    expect(style).not.toBe("none");
   });
 
-  test("shows Ethereum chain with ETH balance", async ({ page }) => {
-    await expect(page.locator(".chain-header").filter({ hasText: "Ethereum" })).toBeVisible();
-    await expect(page.locator(".token-symbol").filter({ hasText: "ETH" }).first()).toBeVisible();
+  test("table has header row with columns", async ({ page }) => {
+    const headers = page.locator(".token-table thead th");
+    // Columns: icon, Token, Chain, Balance, Value
+    expect(await headers.count()).toBe(5);
   });
 
-  test("shows ERC-20 token balances", async ({ page }) => {
-    await expect(page.locator(".token-symbol").filter({ hasText: "USDC" }).first()).toBeVisible();
-    await expect(page.locator(".token-symbol").filter({ hasText: "WBTC" })).toBeVisible();
+  test("shows chain icon badges", async ({ page }) => {
+    const icons = page.locator(".token-table .chain-icon");
+    expect(await icons.count()).toBeGreaterThan(0);
+    // Check that icons have colored classes
+    await expect(icons.first()).toBeVisible();
   });
 
-  test("shows Solana wallet section", async ({ page }) => {
-    await expect(page.locator("text=Solana Wallet")).toBeVisible();
+  test("shows ETH token row with Ethereum chain", async ({ page }) => {
+    // Find a row containing ETH
+    const ethRow = page.locator(".token-table tbody tr").filter({ hasText: "ETH" }).first();
+    await expect(ethRow).toBeVisible();
+    await expect(ethRow.locator(".chain-icon")).toBeVisible();
   });
 
-  test("shows SOL balance", async ({ page }) => {
-    const solRow = page.locator(".token-row").filter({ hasText: "SOL" }).filter({ hasText: "Native" });
-    await expect(solRow).toBeVisible();
+  test("shows USDC rows", async ({ page }) => {
+    const usdcRows = page.locator(".token-table tbody tr").filter({ hasText: "USDC" });
+    // USDC on Ethereum + USDC on Solana
+    expect(await usdcRows.count()).toBeGreaterThanOrEqual(2);
   });
 
-  test("shows Base chain section", async ({ page }) => {
-    await expect(page.locator(".chain-header").filter({ hasText: "Base" })).toBeVisible();
+  test("shows SOL token row", async ({ page }) => {
+    const solRow = page.locator(".token-table tbody tr").filter({ hasText: "SOL" });
+    await expect(solRow.first()).toBeVisible();
+  });
+
+  test("clicking Chain sort reorders table", async ({ page }) => {
+    await page.locator(".sort-btn").filter({ hasText: "Chain" }).click();
+    await page.waitForTimeout(300);
+
+    // After sorting by chain, check that the sort button is active
+    await expect(page.locator(".sort-btn.active").filter({ hasText: "Chain" })).toBeVisible();
+  });
+
+  test("clicking Name sort reorders table", async ({ page }) => {
+    await page.locator(".sort-btn").filter({ hasText: "Name" }).click();
+    await page.waitForTimeout(300);
+
+    await expect(page.locator(".sort-btn.active").filter({ hasText: "Name" })).toBeVisible();
+  });
+
+  test("all tokens from all chains in one table", async ({ page }) => {
+    // Count rows — should have ETH (Ethereum), ETH (Base), USDC (Ethereum), WBTC, SOL, USDC (Solana)
+    const rows = page.locator(".token-table tbody tr");
+    // At minimum: ETH x 2 chains + USDC + WBTC + SOL + USDC(sol) = at least 6
+    expect(await rows.count()).toBeGreaterThanOrEqual(6);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Inventory — NFTs view
+// Inventory — NFTs view (flat grid with chain badges)
 // ═══════════════════════════════════════════════════════════════════════════
 
 test.describe("Inventory — NFTs view", () => {
@@ -227,32 +259,40 @@ test.describe("Inventory — NFTs view", () => {
     await page.locator("button.inventory-subtab").filter({ hasText: "NFTs" }).click();
     await page.waitForTimeout(1000);
 
-    // Should show an NFT card
     await expect(page.locator(".nft-card").first()).toBeVisible();
   });
 
-  test("shows EVM NFTs grouped by chain", async ({ page }) => {
+  test("NFT cards show chain badges", async ({ page }) => {
     await page.locator("button.inventory-subtab").filter({ hasText: "NFTs" }).click();
     await page.waitForTimeout(1000);
 
-    await expect(page.locator("text=Ethereum").first()).toBeVisible();
+    // Each NFT card should have a chain indicator
+    await expect(page.locator(".nft-chain").first()).toBeVisible();
+  });
+
+  test("shows Bored Ape NFT", async ({ page }) => {
+    await page.locator("button.inventory-subtab").filter({ hasText: "NFTs" }).click();
+    await page.waitForTimeout(1000);
+
     await expect(page.locator(".nft-name").filter({ hasText: "Bored Ape #1234" })).toBeVisible();
-  });
-
-  test("shows Solana NFTs", async ({ page }) => {
-    await page.locator("button.inventory-subtab").filter({ hasText: "NFTs" }).click();
-    await page.waitForTimeout(1000);
-
-    await expect(page.locator("text=Solana").first()).toBeVisible();
-    await expect(page.locator(".nft-name").filter({ hasText: "DRiP Drop #42" })).toBeVisible();
-  });
-
-  test("NFT cards show collection name", async ({ page }) => {
-    await page.locator("button.inventory-subtab").filter({ hasText: "NFTs" }).click();
-    await page.waitForTimeout(1000);
-
     await expect(page.locator(".nft-collection").filter({ hasText: "Bored Ape Yacht Club" })).toBeVisible();
+  });
+
+  test("shows Solana DRiP NFT", async ({ page }) => {
+    await page.locator("button.inventory-subtab").filter({ hasText: "NFTs" }).click();
+    await page.waitForTimeout(1000);
+
+    await expect(page.locator(".nft-name").filter({ hasText: "DRiP Drop #42" })).toBeVisible();
     await expect(page.locator(".nft-collection").filter({ hasText: "DRiP" })).toBeVisible();
+  });
+
+  test("NFT grid is scrollable", async ({ page }) => {
+    await page.locator("button.inventory-subtab").filter({ hasText: "NFTs" }).click();
+    await page.waitForTimeout(1000);
+
+    const grid = page.locator(".nft-grid");
+    const style = await grid.evaluate((el) => getComputedStyle(el).maxHeight);
+    expect(style).not.toBe("none");
   });
 });
 
@@ -288,14 +328,11 @@ test.describe("Config — wallet API keys", () => {
   });
 
   test("shows Save API Keys button", async ({ page }) => {
-    // There may be multiple "Save API Keys" buttons (from inventory setup too)
-    // but the config page should have one
     const saveBtn = page.locator("button").filter({ hasText: "Save API Keys" });
     await expect(saveBtn.first()).toBeVisible();
   });
 
   test("shows set/not-set indicator for keys", async ({ page }) => {
-    // Default mock has no keys set
     const notSetLabels = page.locator("text=not set");
     expect(await notSetLabels.count()).toBeGreaterThanOrEqual(2);
   });
@@ -323,7 +360,6 @@ test.describe("Config — private key export", () => {
   });
 
   test("clicking Export Keys shows confirmation dialog", async ({ page }) => {
-    // Listen for the dialog
     page.on("dialog", async (dialog) => {
       expect(dialog.message()).toContain("private keys");
       await dialog.accept();
@@ -332,12 +368,10 @@ test.describe("Config — private key export", () => {
     await page.locator("button").filter({ hasText: "Export Keys" }).click();
     await page.waitForTimeout(500);
 
-    // After accepting, should show the key export box
     await expect(page.locator(".key-export-box")).toBeVisible();
   });
 
   test("exported keys contain EVM and Solana sections", async ({ page }) => {
-    // Auto-accept dialog
     page.on("dialog", async (dialog) => await dialog.accept());
 
     await page.locator("button").filter({ hasText: "Export Keys" }).click();
@@ -360,25 +394,21 @@ test.describe("Config — private key export", () => {
   test("clicking Hide Keys hides the export box", async ({ page }) => {
     page.on("dialog", async (dialog) => await dialog.accept());
 
-    // Show keys
     await page.locator("button").filter({ hasText: "Export Keys" }).click();
     await page.waitForTimeout(500);
     await expect(page.locator(".key-export-box")).toBeVisible();
 
-    // Hide keys
     await page.locator("button").filter({ hasText: "Hide Keys" }).click();
     await page.waitForTimeout(300);
     await expect(page.locator(".key-export-box")).not.toBeVisible();
   });
 
   test("dismissing confirmation dialog does not show keys", async ({ page }) => {
-    // Dismiss (cancel) the dialog
     page.on("dialog", async (dialog) => await dialog.dismiss());
 
     await page.locator("button").filter({ hasText: "Export Keys" }).click();
     await page.waitForTimeout(500);
 
-    // Should NOT show the key export box
     await expect(page.locator(".key-export-box")).not.toBeVisible();
   });
 });

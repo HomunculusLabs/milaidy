@@ -137,10 +137,8 @@ const CORE_PLUGINS: readonly string[] = [
   "@elizaos/plugin-personality",
   "@elizaos/plugin-experience",
   "@elizaos/plugin-plugin-manager",
-  "@elizaos/plugin-browser",
   "@elizaos/plugin-cli",
-  // "@elizaos/plugin-code", // Temporarily disabled: provider spec resolution issue (coderStatusProvider)
-  "@elizaos/plugin-computeruse",
+  "@elizaos/plugin-code",
   "@elizaos/plugin-edge-tts",
   "@elizaos/plugin-knowledge",
   "@elizaos/plugin-mcp",
@@ -149,11 +147,21 @@ const CORE_PLUGINS: readonly string[] = [
   "@elizaos/plugin-secrets-manager",
   "@elizaos/plugin-todo",
   "@elizaos/plugin-trust",
-  "@elizaos/plugin-vision",
-  // "@elizaos/plugin-cron", // Disabled: crashes on startup (plugin creates rooms without worldId)
-  // "@elizaos/plugin-form", // Disabled: published package missing dist/index.js (node build lives in dist/node)
+  "@elizaos/plugin-form",
   "@elizaos/plugin-goals",
   "@elizaos/plugin-scheduling",
+];
+
+/**
+ * Optional plugins that require native binaries or specific config.
+ * These are only loaded when explicitly enabled via features config,
+ * NOT by default — they crash if their prerequisites are missing.
+ */
+const OPTIONAL_NATIVE_PLUGINS: readonly string[] = [
+  "@elizaos/plugin-browser",       // requires browser server binary
+  "@elizaos/plugin-vision",        // requires @tensorflow/tfjs-node native addon
+  "@elizaos/plugin-cron",          // requires worldId at service init
+  "@elizaos/plugin-computeruse",   // requires platform-specific binaries
 ];
 
 /** Maps Milaidy channel names to ElizaOS plugin package names. */
@@ -196,7 +204,12 @@ const PROVIDER_PLUGIN_MAP: Readonly<Record<string, string>> = {
  * The lookup code in {@link collectPluginNames} is intentionally kept
  * so new entries work without additional wiring.
  */
-const OPTIONAL_PLUGIN_MAP: Readonly<Record<string, string>> = {};
+const OPTIONAL_PLUGIN_MAP: Readonly<Record<string, string>> = {
+  browser: "@elizaos/plugin-browser",
+  vision: "@elizaos/plugin-vision",
+  cron: "@elizaos/plugin-cron",
+  computeruse: "@elizaos/plugin-computeruse",
+};
 
 function looksLikePlugin(value: unknown): value is Plugin {
   if (!value || typeof value !== "object") return false;

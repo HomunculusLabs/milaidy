@@ -39,6 +39,8 @@ export class MilaidyApp extends LitElement {
   @state() chatSending = false;
   @state() plugins: PluginInfo[] = [];
   @state() pluginFilter: "all" | "ai-provider" | "connector" | "database" | "feature" = "all";
+  @state() pluginSearch = "";
+  @state() pluginSettingsOpen: Set<string> = new Set();
   @state() skills: SkillInfo[] = [];
   @state() logs: LogEntry[] = [];
 
@@ -57,6 +59,8 @@ export class MilaidyApp extends LitElement {
   @state() walletExportData: WalletExportResult | null = null;
   @state() walletExportVisible = false;
   @state() walletApiKeySaving = false;
+  @state() inventorySort: "chain" | "symbol" | "value" = "value";
+  @state() walletError: string | null = null;
 
   // Onboarding wizard state
   @state() onboardingStep = 0;
@@ -222,10 +226,17 @@ export class MilaidyApp extends LitElement {
     }
 
     /* Inventory */
+    .inv-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
     .inventory-subtab {
       display: inline-block;
       padding: 4px 16px;
-      margin-right: 4px;
       cursor: pointer;
       border: 1px solid var(--border);
       background: var(--bg);
@@ -244,67 +255,127 @@ export class MilaidyApp extends LitElement {
       color: var(--accent);
     }
 
-    .chain-section {
-      margin-top: 16px;
+    .sort-btn {
+      padding: 3px 10px;
       border: 1px solid var(--border);
+      background: var(--bg);
+      cursor: pointer;
+      font-size: 11px;
+      font-family: var(--mono);
+    }
+
+    .sort-btn.active {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .sort-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Scrollable token table */
+    .token-table-wrap {
+      margin-top: 12px;
+      border: 1px solid var(--border);
+      max-height: 60vh;
+      overflow-y: auto;
       background: var(--card);
     }
 
-    .chain-header {
-      padding: 10px 14px;
-      border-bottom: 1px solid var(--border);
-      font-weight: bold;
-      font-size: 13px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .token-row {
-      display: flex;
-      align-items: center;
-      padding: 8px 14px;
+    .token-table {
+      width: 100%;
+      border-collapse: collapse;
       font-size: 12px;
-      border-bottom: 1px solid var(--border);
     }
 
-    .token-row:last-child {
-      border-bottom: none;
+    .token-table thead {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--bg);
     }
 
-    .token-symbol {
-      font-weight: bold;
-      font-family: var(--mono);
-      min-width: 80px;
-    }
-
-    .token-name {
+    .token-table th {
+      text-align: left;
+      padding: 8px 12px;
+      font-size: 11px;
+      font-weight: 600;
       color: var(--muted);
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      border-bottom: 1px solid var(--border);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      user-select: none;
       white-space: nowrap;
     }
 
-    .token-balance {
-      font-family: var(--mono);
-      text-align: right;
-      min-width: 120px;
+    .token-table th:hover { color: var(--text); }
+    .token-table th.sorted { color: var(--accent); }
+    .token-table th.r { text-align: right; }
+
+    .token-table td {
+      padding: 7px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
     }
 
-    .token-value {
+    .token-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .token-table .chain-icon {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      text-align: center;
+      line-height: 16px;
+      font-size: 9px;
+      font-weight: bold;
       font-family: var(--mono);
+      flex-shrink: 0;
+      vertical-align: middle;
+    }
+
+    .chain-icon.eth { background: #627eea; color: #fff; }
+    .chain-icon.base { background: #0052ff; color: #fff; }
+    .chain-icon.arb { background: #28a0f0; color: #fff; }
+    .chain-icon.op { background: #ff0420; color: #fff; }
+    .chain-icon.pol { background: #8247e5; color: #fff; }
+    .chain-icon.sol { background: #9945ff; color: #fff; }
+
+    .td-symbol {
+      font-weight: bold;
+      font-family: var(--mono);
+    }
+
+    .td-name {
       color: var(--muted);
-      text-align: right;
-      min-width: 80px;
-      margin-left: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 160px;
     }
 
+    .td-balance {
+      font-family: var(--mono);
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .td-value {
+      font-family: var(--mono);
+      text-align: right;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    /* NFTs */
     .nft-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
       margin-top: 12px;
+      max-height: 60vh;
+      overflow-y: auto;
     }
 
     .nft-card {
@@ -315,18 +386,18 @@ export class MilaidyApp extends LitElement {
 
     .nft-card img {
       width: 100%;
-      height: 160px;
+      height: 150px;
       object-fit: cover;
       display: block;
       background: var(--bg-muted);
     }
 
     .nft-card .nft-info {
-      padding: 8px 10px;
+      padding: 6px 8px;
     }
 
     .nft-card .nft-name {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: bold;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -334,13 +405,23 @@ export class MilaidyApp extends LitElement {
     }
 
     .nft-card .nft-collection {
-      font-size: 11px;
+      font-size: 10px;
       color: var(--muted);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
+    .nft-card .nft-chain {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* Setup cards */
     .setup-card {
       border: 1px solid var(--border);
       background: var(--card);
@@ -702,18 +783,33 @@ export class MilaidyApp extends LitElement {
       margin-bottom: 16px;
     }
 
+    /* Plugin search */
+    .plugin-search {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      font-size: 13px;
+      font-family: var(--font-body);
+      margin-bottom: 12px;
+    }
+
+    .plugin-search::placeholder {
+      color: var(--muted);
+    }
+
     /* Plugin list */
     .plugin-list {
       display: flex;
       flex-direction: column;
-      gap: 1px;
+      gap: 6px;
     }
 
     .plugin-item {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 12px 16px;
+      padding: 16px 20px;
       border: 1px solid var(--border);
       background: var(--card);
     }
@@ -726,6 +822,7 @@ export class MilaidyApp extends LitElement {
     .plugin-item .plugin-desc {
       font-size: 12px;
       color: var(--muted);
+      margin-top: 2px;
     }
 
     .plugin-item .plugin-status {
@@ -738,6 +835,67 @@ export class MilaidyApp extends LitElement {
     .plugin-item .plugin-status.enabled {
       color: var(--ok);
       border-color: var(--ok);
+    }
+
+    /* Collapsible settings */
+    .plugin-settings-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      user-select: none;
+    }
+
+    .plugin-settings-toggle:hover {
+      opacity: 0.8;
+    }
+
+    .plugin-settings-toggle .settings-chevron {
+      display: inline-block;
+      transition: transform 0.15s ease;
+      font-size: 10px;
+    }
+
+    .plugin-settings-toggle .settings-chevron.open {
+      transform: rotate(90deg);
+    }
+
+    .plugin-settings-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .plugin-settings-dot.all-set {
+      background: #2ecc71;
+    }
+
+    .plugin-settings-dot.missing {
+      background: #e74c3c;
+    }
+
+    .plugin-settings-body {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 10px;
+      padding: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+
+    .plugin-settings-body input {
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      font-size: 12px;
+      font-family: var(--mono);
     }
 
     /* Logs */
@@ -954,8 +1112,8 @@ export class MilaidyApp extends LitElement {
         this.walletExportVisible = false;
         this.walletExportData = null;
       }, 60_000);
-    } catch {
-      // ignore
+    } catch (err) {
+      this.walletError = `Failed to export keys: ${err instanceof Error ? err.message : "network error"}`;
     }
   }
 
@@ -1323,14 +1481,40 @@ export class MilaidyApp extends LitElement {
       "database": "Database",
       "feature": "Feature",
     };
-    const filtered = this.pluginFilter === "all"
-      ? this.plugins
-      : this.plugins.filter((p) => p.category === this.pluginFilter);
+
+    const searchLower = this.pluginSearch.toLowerCase();
+    const filtered = this.plugins.filter((p) => {
+      const matchesCategory = this.pluginFilter === "all" || p.category === this.pluginFilter;
+      const matchesSearch = !searchLower
+        || p.name.toLowerCase().includes(searchLower)
+        || (p.description ?? "").toLowerCase().includes(searchLower)
+        || p.id.toLowerCase().includes(searchLower);
+      return matchesCategory && matchesSearch;
+    });
+
+    const toggleSettings = (pluginId: string) => {
+      const next = new Set(this.pluginSettingsOpen);
+      if (next.has(pluginId)) {
+        next.delete(pluginId);
+      } else {
+        next.add(pluginId);
+      }
+      this.pluginSettingsOpen = next;
+    };
 
     return html`
       <h2>Plugins</h2>
       <p class="subtitle">Manage plugins and integrations. ${this.plugins.length} plugins discovered.</p>
-      <div class="plugin-filters" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">
+
+      <input
+        class="plugin-search"
+        type="text"
+        placeholder="Search plugins by name or description..."
+        .value=${this.pluginSearch}
+        @input=${(e: Event) => { this.pluginSearch = (e.target as HTMLInputElement).value; }}
+      />
+
+      <div class="plugin-filters" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">
         ${categories.map(
           (cat) => html`
             <button
@@ -1350,12 +1534,19 @@ export class MilaidyApp extends LitElement {
           `,
         )}
       </div>
+
       ${filtered.length === 0
-        ? html`<div class="empty-state">No plugins in this category.</div>`
+        ? html`<div class="empty-state">${this.pluginSearch ? "No plugins match your search." : "No plugins in this category."}</div>`
         : html`
             <div class="plugin-list">
-              ${filtered.map(
-                (p) => html`
+              ${filtered.map((p) => {
+                const hasParams = p.parameters && p.parameters.length > 0;
+                const allParamsSet = hasParams ? p.parameters.every((param) => param.isSet) : true;
+                const settingsOpen = this.pluginSettingsOpen.has(p.id);
+                const setCount = hasParams ? p.parameters.filter((param) => param.isSet).length : 0;
+                const totalCount = hasParams ? p.parameters.length : 0;
+
+                return html`
                   <div class="plugin-item" data-plugin-id=${p.id} style="flex-direction:column;align-items:stretch;">
                     <div style="display:flex;justify-content:space-between;align-items:center;">
                       <div style="flex:1;min-width:0;">
@@ -1392,42 +1583,59 @@ export class MilaidyApp extends LitElement {
                         </label>
                       </div>
                     </div>
-                    ${p.enabled && p.parameters && p.parameters.length > 0
+
+                    ${hasParams
                       ? html`
-                          <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
-                            ${p.parameters.map(
-                              (param) => html`
-                                <div style="display:flex;flex-direction:column;gap:2px;font-size:12px;">
-                                  <div style="display:flex;align-items:center;gap:6px;">
-                                    <code style="font-size:11px;font-weight:600;color:var(--text-strong);">${param.key}</code>
-                                    ${param.required ? html`<span style="font-size:10px;color:var(--danger, #e74c3c);">required</span>` : ""}
-                                    ${param.isSet ? html`<span style="font-size:10px;color:var(--ok);">set</span>` : ""}
-                                  </div>
-                                  <div style="color:var(--muted);font-size:11px;">${param.description}${param.default ? ` (default: ${param.default})` : ""}</div>
-                                  <input
-                                    type="${param.sensitive ? "password" : "text"}"
-                                    .value=${param.isSet && !param.sensitive ? (param.currentValue ?? "") : (param.isSet ? "" : (param.default ?? ""))}
-                                    placeholder="${param.sensitive && param.isSet ? "********  (already set, leave blank to keep)" : "Enter value..."}"
-                                    data-plugin-param="${p.id}:${param.key}"
-                                    style="padding:4px 8px;border:1px solid var(--border);background:var(--card);font-size:12px;font-family:var(--mono);"
-                                  />
-                                </div>
-                              `,
-                            )}
-                            <button
-                              class="btn"
-                              style="align-self:flex-end;font-size:11px;padding:4px 14px;margin-top:4px;"
-                              @click=${() => this.handlePluginConfigSave(p.id)}
-                            >Save Settings</button>
+                          <div
+                            class="plugin-settings-toggle"
+                            @click=${() => toggleSettings(p.id)}
+                          >
+                            <span class="settings-chevron ${settingsOpen ? "open" : ""}">&#9654;</span>
+                            <span class="plugin-settings-dot ${allParamsSet ? "all-set" : "missing"}"></span>
+                            <span>Settings</span>
+                            <span style="color:var(--muted);font-weight:400;">(${setCount}/${totalCount} configured)</span>
                           </div>
+
+                          ${settingsOpen
+                            ? html`
+                                <div class="plugin-settings-body">
+                                  ${p.parameters.map(
+                                    (param) => html`
+                                      <div style="display:flex;flex-direction:column;gap:3px;font-size:12px;">
+                                        <div style="display:flex;align-items:center;gap:6px;">
+                                          <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${param.isSet ? "#2ecc71" : (param.required ? "#e74c3c" : "var(--muted)")};flex-shrink:0;"></span>
+                                          <code style="font-size:11px;font-weight:600;color:var(--text-strong);">${param.key}</code>
+                                          ${param.required ? html`<span style="font-size:10px;color:#e74c3c;">required</span>` : ""}
+                                          ${param.isSet ? html`<span style="font-size:10px;color:#2ecc71;">set</span>` : ""}
+                                        </div>
+                                        <div style="color:var(--muted);font-size:11px;padding-left:12px;">${param.description}${param.default ? ` (default: ${param.default})` : ""}</div>
+                                        <input
+                                          type="${param.sensitive ? "password" : "text"}"
+                                          .value=${param.isSet && !param.sensitive ? (param.currentValue ?? "") : (param.isSet ? "" : (param.default ?? ""))}
+                                          placeholder="${param.sensitive && param.isSet ? "********  (already set, leave blank to keep)" : "Enter value..."}"
+                                          data-plugin-param="${p.id}:${param.key}"
+                                        />
+                                      </div>
+                                    `,
+                                  )}
+                                  <button
+                                    class="btn"
+                                    style="align-self:flex-end;font-size:11px;padding:4px 14px;margin-top:4px;"
+                                    @click=${() => this.handlePluginConfigSave(p.id)}
+                                  >Save Settings</button>
+                                </div>
+                              `
+                            : ""
+                          }
                         `
                       : ""
                     }
+
                     ${p.enabled && p.validationErrors && p.validationErrors.length > 0
                       ? html`
-                          <div style="margin-top:6px;padding:6px 8px;border:1px solid var(--danger);background:var(--accent-subtle);font-size:12px;">
+                          <div style="margin-top:8px;padding:8px 10px;border:1px solid #e74c3c;background:rgba(231,76,60,0.06);font-size:12px;">
                             ${p.validationErrors.map(
-                              (err) => html`<div style="color:var(--danger);">${err.field}: ${err.message}</div>`,
+                              (err) => html`<div style="color:#e74c3c;">${err.field}: ${err.message}</div>`,
                             )}
                           </div>
                         `
@@ -1444,8 +1652,8 @@ export class MilaidyApp extends LitElement {
                       : ""
                     }
                   </div>
-                `,
-              )}
+                `;
+              })}
             </div>
           `}
     `;
@@ -1547,33 +1755,43 @@ export class MilaidyApp extends LitElement {
     // Always load config first to know key status
     await this.loadWalletConfig();
     if (!this.walletConfig?.alchemyKeySet && !this.walletConfig?.heliusKeySet) return;
-    this.loadBalances();
+    await this.loadBalances();
   }
 
   private async loadWalletConfig(): Promise<void> {
     try {
       this.walletConfig = await client.getWalletConfig();
-    } catch { /* ignore */ }
+      this.walletError = null;
+    } catch (err) {
+      this.walletError = `Failed to load wallet config: ${err instanceof Error ? err.message : "network error"}`;
+    }
   }
 
   private async loadBalances(): Promise<void> {
     this.walletLoading = true;
+    this.walletError = null;
     try {
       this.walletBalances = await client.getWalletBalances();
-    } catch { /* ignore */ }
+    } catch (err) {
+      this.walletError = `Failed to fetch balances: ${err instanceof Error ? err.message : "network error"}`;
+    }
     this.walletLoading = false;
   }
 
   private async loadNfts(): Promise<void> {
     this.walletNftsLoading = true;
+    this.walletError = null;
     try {
       this.walletNfts = await client.getWalletNfts();
-    } catch { /* ignore */ }
+    } catch (err) {
+      this.walletError = `Failed to fetch NFTs: ${err instanceof Error ? err.message : "network error"}`;
+    }
     this.walletNftsLoading = false;
   }
 
   private async handleWalletApiKeySave(): Promise<void> {
     this.walletApiKeySaving = true;
+    this.walletError = null;
     const inputs = this.shadowRoot?.querySelectorAll<HTMLInputElement>("[data-wallet-config]") ?? [];
     const config: Record<string, string> = {};
     for (const input of inputs) {
@@ -1589,8 +1807,10 @@ export class MilaidyApp extends LitElement {
         // Clear inputs after save
         for (const input of inputs) input.value = "";
         // Reload balances now that keys are set
-        this.loadBalances();
-      } catch { /* ignore */ }
+        await this.loadBalances();
+      } catch (err) {
+        this.walletError = `Failed to save API keys: ${err instanceof Error ? err.message : "network error"}`;
+      }
     }
     this.walletApiKeySaving = false;
   }
@@ -1602,6 +1822,12 @@ export class MilaidyApp extends LitElement {
     return html`
       <h2>Inventory</h2>
       <p class="subtitle">Tokens and NFTs across all your wallets.</p>
+
+      ${this.walletError ? html`
+        <div style="margin-top:12px;padding:10px 14px;border:1px solid var(--danger, #e74c3c);background:rgba(231,76,60,0.06);font-size:12px;color:var(--danger, #e74c3c);">
+          ${this.walletError}
+        </div>
+      ` : ""}
 
       ${needsSetup ? this.renderInventorySetup() : this.renderInventoryContent()}
     `;
@@ -1678,7 +1904,7 @@ export class MilaidyApp extends LitElement {
 
   private renderInventoryContent() {
     return html`
-      <div style="margin-top:12px;display:flex;align-items:center;gap:8px;">
+      <div class="inv-toolbar">
         <button class="inventory-subtab ${this.inventoryView === "tokens" ? "active" : ""}"
                 @click=${() => { this.inventoryView = "tokens"; if (!this.walletBalances) this.loadBalances(); }}>
           Tokens
@@ -1687,14 +1913,122 @@ export class MilaidyApp extends LitElement {
                 @click=${() => { this.inventoryView = "nfts"; if (!this.walletNfts) this.loadNfts(); }}>
           NFTs
         </button>
-        <button class="btn" style="margin-left:auto;font-size:11px;padding:4px 12px;"
-                @click=${() => this.inventoryView === "tokens" ? this.loadBalances() : this.loadNfts()}>
-          Refresh
-        </button>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:6px;">
+          ${this.inventoryView === "tokens" ? html`
+            <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;">Sort:</span>
+            <button class="sort-btn ${this.inventorySort === "value" ? "active" : ""}"
+                    @click=${() => { this.inventorySort = "value"; }}>Value</button>
+            <button class="sort-btn ${this.inventorySort === "chain" ? "active" : ""}"
+                    @click=${() => { this.inventorySort = "chain"; }}>Chain</button>
+            <button class="sort-btn ${this.inventorySort === "symbol" ? "active" : ""}"
+                    @click=${() => { this.inventorySort = "symbol"; }}>Name</button>
+          ` : ""}
+          <button class="btn" style="font-size:11px;padding:3px 10px;"
+                  @click=${() => this.inventoryView === "tokens" ? this.loadBalances() : this.loadNfts()}>
+            Refresh
+          </button>
+        </div>
       </div>
 
       ${this.inventoryView === "tokens" ? this.renderTokensView() : this.renderNftsView()}
     `;
+  }
+
+  /** Map chain name to short code for the icon badge. */
+  private chainIcon(chain: string): { code: string; cls: string } {
+    const c = chain.toLowerCase();
+    if (c === "ethereum" || c === "mainnet") return { code: "E", cls: "eth" };
+    if (c === "base") return { code: "B", cls: "base" };
+    if (c === "arbitrum") return { code: "A", cls: "arb" };
+    if (c === "optimism") return { code: "O", cls: "op" };
+    if (c === "polygon") return { code: "P", cls: "pol" };
+    if (c === "solana") return { code: "S", cls: "sol" };
+    return { code: chain.charAt(0).toUpperCase(), cls: "eth" };
+  }
+
+  /**
+   * Flatten all balances from all chains into a single sortable list.
+   */
+  private flattenBalances(): Array<{
+    chain: string;
+    symbol: string;
+    name: string;
+    balance: string;
+    valueUsd: number;
+    balanceRaw: number;
+  }> {
+    const rows: Array<{
+      chain: string;
+      symbol: string;
+      name: string;
+      balance: string;
+      valueUsd: number;
+      balanceRaw: number;
+    }> = [];
+
+    const b = this.walletBalances;
+    if (!b) return rows;
+
+    if (b.evm) {
+      for (const chain of b.evm.chains) {
+        // Native token
+        rows.push({
+          chain: chain.chain,
+          symbol: chain.nativeSymbol,
+          name: `${chain.chain} native`,
+          balance: chain.nativeBalance,
+          valueUsd: Number.parseFloat(chain.nativeValueUsd) || 0,
+          balanceRaw: Number.parseFloat(chain.nativeBalance) || 0,
+        });
+        // ERC-20s
+        for (const t of chain.tokens) {
+          rows.push({
+            chain: chain.chain,
+            symbol: t.symbol,
+            name: t.name,
+            balance: t.balance,
+            valueUsd: Number.parseFloat(t.valueUsd) || 0,
+            balanceRaw: Number.parseFloat(t.balance) || 0,
+          });
+        }
+      }
+    }
+
+    if (b.solana) {
+      rows.push({
+        chain: "Solana",
+        symbol: "SOL",
+        name: "Solana native",
+        balance: b.solana.solBalance,
+        valueUsd: Number.parseFloat(b.solana.solValueUsd) || 0,
+        balanceRaw: Number.parseFloat(b.solana.solBalance) || 0,
+      });
+      for (const t of b.solana.tokens) {
+        rows.push({
+          chain: "Solana",
+          symbol: t.symbol,
+          name: t.name,
+          balance: t.balance,
+          valueUsd: Number.parseFloat(t.valueUsd) || 0,
+          balanceRaw: Number.parseFloat(t.balance) || 0,
+        });
+      }
+    }
+
+    return rows;
+  }
+
+  private sortedBalances() {
+    const rows = this.flattenBalances();
+    const s = this.inventorySort;
+    if (s === "value") {
+      rows.sort((a, b) => b.valueUsd - a.valueUsd || b.balanceRaw - a.balanceRaw);
+    } else if (s === "chain") {
+      rows.sort((a, b) => a.chain.localeCompare(b.chain) || a.symbol.localeCompare(b.symbol));
+    } else if (s === "symbol") {
+      rows.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.chain.localeCompare(b.chain));
+    }
+    return rows;
   }
 
   private renderTokensView() {
@@ -1705,72 +2039,52 @@ export class MilaidyApp extends LitElement {
       return html`<div class="empty-state" style="margin-top:24px;">No balance data yet. Click Refresh.</div>`;
     }
 
-    const b = this.walletBalances;
-    return html`
-      ${b.evm ? html`
-        <div style="margin-top:20px;">
-          <div style="font-size:13px;font-weight:bold;margin-bottom:4px;">EVM Wallet</div>
-          <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:12px;">${b.evm.address}</div>
+    const rows = this.sortedBalances();
 
-          ${b.evm.chains.map((chain) => html`
-            <div class="chain-section">
-              <div class="chain-header">${chain.chain}</div>
-              <div class="token-row">
-                <span class="token-symbol">${chain.nativeSymbol}</span>
-                <span class="token-name">Native</span>
-                <span class="token-balance">${this.formatBalance(chain.nativeBalance)}</span>
-                <span class="token-value">${chain.nativeValueUsd !== "0" ? `$${chain.nativeValueUsd}` : ""}</span>
-              </div>
-              ${chain.tokens.map((token) => html`
-                <div class="token-row">
-                  <span class="token-symbol">${token.symbol}</span>
-                  <span class="token-name">${token.name}</span>
-                  <span class="token-balance">${this.formatBalance(token.balance)}</span>
-                  <span class="token-value">${token.valueUsd !== "0" ? `$${token.valueUsd}` : ""}</span>
-                </div>
-              `)}
-              ${chain.tokens.length === 0 ? html`
-                <div class="token-row" style="color:var(--muted);font-style:italic;">No ERC-20 tokens</div>
-              ` : ""}
-            </div>
-          `)}
-        </div>
-      ` : ""}
-
-      ${b.solana ? html`
-        <div style="margin-top:24px;">
-          <div style="font-size:13px;font-weight:bold;margin-bottom:4px;">Solana Wallet</div>
-          <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:12px;">${b.solana.address}</div>
-
-          <div class="chain-section">
-            <div class="chain-header">Solana</div>
-            <div class="token-row">
-              <span class="token-symbol">SOL</span>
-              <span class="token-name">Native</span>
-              <span class="token-balance">${this.formatBalance(b.solana.solBalance)}</span>
-              <span class="token-value">${b.solana.solValueUsd !== "0" ? `$${b.solana.solValueUsd}` : ""}</span>
-            </div>
-            ${b.solana.tokens.map((token) => html`
-              <div class="token-row">
-                <span class="token-symbol">${token.symbol}</span>
-                <span class="token-name">${token.name}</span>
-                <span class="token-balance">${this.formatBalance(token.balance)}</span>
-                <span class="token-value">${token.valueUsd !== "0" ? `$${token.valueUsd}` : ""}</span>
-              </div>
-            `)}
-            ${b.solana.tokens.length === 0 ? html`
-              <div class="token-row" style="color:var(--muted);font-style:italic;">No SPL tokens</div>
-            ` : ""}
-          </div>
-        </div>
-      ` : ""}
-
-      ${!b.evm && !b.solana ? html`
+    if (rows.length === 0) {
+      return html`
         <div class="empty-state" style="margin-top:24px;">
           No wallet data available. Make sure API keys are configured in
           <a href="/config" @click=${(e: Event) => { e.preventDefault(); this.setTab("config"); }}>Config</a>.
         </div>
-      ` : ""}
+      `;
+    }
+
+    return html`
+      <div class="token-table-wrap">
+        <table class="token-table">
+          <thead>
+            <tr>
+              <th style="width:32px;"></th>
+              <th class=${this.inventorySort === "symbol" ? "sorted" : ""}
+                  @click=${() => { this.inventorySort = "symbol"; }}>Token</th>
+              <th class=${this.inventorySort === "chain" ? "sorted" : ""}
+                  @click=${() => { this.inventorySort = "chain"; }}>Chain</th>
+              <th class="r ${this.inventorySort === "value" ? "sorted" : ""}"
+                  @click=${() => { this.inventorySort = "value"; }}>Balance</th>
+              <th class="r ${this.inventorySort === "value" ? "sorted" : ""}"
+                  @click=${() => { this.inventorySort = "value"; }}>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => {
+              const icon = this.chainIcon(row.chain);
+              return html`
+                <tr>
+                  <td><span class="chain-icon ${icon.cls}">${icon.code}</span></td>
+                  <td>
+                    <span class="td-symbol">${row.symbol}</span>
+                    <span class="td-name" style="margin-left:8px;">${row.name}</span>
+                  </td>
+                  <td style="font-size:11px;color:var(--muted);">${row.chain}</td>
+                  <td class="td-balance">${this.formatBalance(row.balance)}</td>
+                  <td class="td-value">${row.valueUsd > 0 ? `$${row.valueUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""}</td>
+                </tr>
+              `;
+            })}
+          </tbody>
+        </table>
+      </div>
     `;
   }
 
@@ -1783,54 +2097,47 @@ export class MilaidyApp extends LitElement {
     }
 
     const n = this.walletNfts;
-    const evmNfts = n.evm.filter((c) => c.nfts.length > 0);
-    const solanaNfts = n.solana?.nfts ?? [];
-    const totalNfts = evmNfts.reduce((sum, c) => sum + c.nfts.length, 0) + solanaNfts.length;
+    // Flatten all NFTs into a single list with chain info
+    type NftItem = { chain: string; name: string; imageUrl: string; collectionName: string };
+    const allNfts: NftItem[] = [];
 
-    if (totalNfts === 0) {
+    for (const chainData of n.evm) {
+      for (const nft of chainData.nfts) {
+        allNfts.push({ chain: chainData.chain, name: nft.name, imageUrl: nft.imageUrl, collectionName: nft.collectionName || nft.tokenType });
+      }
+    }
+    if (n.solana) {
+      for (const nft of n.solana.nfts) {
+        allNfts.push({ chain: "Solana", name: nft.name, imageUrl: nft.imageUrl, collectionName: nft.collectionName });
+      }
+    }
+
+    if (allNfts.length === 0) {
       return html`<div class="empty-state" style="margin-top:24px;">No NFTs found across your wallets.</div>`;
     }
 
     return html`
-      ${evmNfts.map((chainData) => html`
-        <div style="margin-top:20px;">
-          <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">${chainData.chain}</div>
-          <div class="nft-grid">
-            ${chainData.nfts.map((nft) => html`
-              <div class="nft-card">
-                ${nft.imageUrl
-                  ? html`<img src="${nft.imageUrl}" alt="${nft.name}" loading="lazy" />`
-                  : html`<div style="width:100%;height:160px;background:var(--bg-muted);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);">No image</div>`
-                }
-                <div class="nft-info">
-                  <div class="nft-name">${nft.name}</div>
-                  <div class="nft-collection">${nft.collectionName || nft.tokenType}</div>
+      <div class="nft-grid">
+        ${allNfts.map((nft) => {
+          const icon = this.chainIcon(nft.chain);
+          return html`
+            <div class="nft-card">
+              ${nft.imageUrl
+                ? html`<img src="${nft.imageUrl}" alt="${nft.name}" loading="lazy" />`
+                : html`<div style="width:100%;height:150px;background:var(--bg-muted);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);">No image</div>`
+              }
+              <div class="nft-info">
+                <div class="nft-name">${nft.name}</div>
+                <div class="nft-collection">${nft.collectionName}</div>
+                <div class="nft-chain">
+                  <span class="chain-icon ${icon.cls}" style="width:12px;height:12px;line-height:12px;font-size:7px;">${icon.code}</span>
+                  ${nft.chain}
                 </div>
               </div>
-            `)}
-          </div>
-        </div>
-      `)}
-
-      ${solanaNfts.length > 0 ? html`
-        <div style="margin-top:20px;">
-          <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">Solana</div>
-          <div class="nft-grid">
-            ${solanaNfts.map((nft) => html`
-              <div class="nft-card">
-                ${nft.imageUrl
-                  ? html`<img src="${nft.imageUrl}" alt="${nft.name}" loading="lazy" />`
-                  : html`<div style="width:100%;height:160px;background:var(--bg-muted);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);">No image</div>`
-                }
-                <div class="nft-info">
-                  <div class="nft-name">${nft.name}</div>
-                  <div class="nft-collection">${nft.collectionName}</div>
-                </div>
-              </div>
-            `)}
-          </div>
-        </div>
-      ` : ""}
+            </div>
+          `;
+        })}
+      </div>
     `;
   }
 
