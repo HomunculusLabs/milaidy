@@ -793,6 +793,8 @@ function getProviderOptions(): Array<{
 
 interface RequestContext {
   onRestart: (() => Promise<AgentRuntime | null>) | null;
+  /** Filesystem root for serving the built Control UI (optional). */
+  staticRoot: string | null;
 }
 
 async function handleRequest(
@@ -1390,8 +1392,88 @@ async function handleRequest(
     return;
   }
 
+  // ── Static file serving (Control UI) ──────────────────────────────────
+  // Serve the built frontend from dist/control-ui/ when available.
+  // API routes above take priority; everything else falls through here.
+  if (ctx?.staticRoot) {
+    const served = await serveStaticFile(req, res, ctx.staticRoot, pathname);
+    if (served) return;
+  }
+
   // ── Fallback ────────────────────────────────────────────────────────────
   error(res, "Not found", 404);
+}
+
+// ---------------------------------------------------------------------------
+// Static file serving
+// ---------------------------------------------------------------------------
+
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".webp": "image/webp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".webmanifest": "application/manifest+json",
+  ".map": "application/json",
+};
+
+/**
+ * Serve a static file from `root`. Returns true if the file was served.
+ * For SPA routing, serves index.html for paths that don't match a file.
+ */
+async function serveStaticFile(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  root: string,
+  pathname: string,
+): Promise<boolean> {
+  // Prevent directory traversal
+  const safePath = path.normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, "");
+  let filePath = path.join(root, safePath);
+
+  // If it's a directory, try index.html
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+    filePath = path.join(filePath, "index.html");
+  }
+
+  // Try the exact file
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
+    const content = fs.readFileSync(filePath);
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": content.length,
+      "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
+    });
+    res.end(content);
+    return true;
+  }
+
+  // SPA fallback: serve index.html for non-file paths (client-side routing)
+  const indexPath = path.join(root, "index.html");
+  if (fs.existsSync(indexPath)) {
+    const content = fs.readFileSync(indexPath);
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Length": content.length,
+      "Cache-Control": "no-cache",
+    });
+    res.end(content);
+    return true;
+  }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1407,6 +1489,9 @@ export async function startApiServer(opts?: {
    * If omitted the endpoint returns 501 (not supported in this mode).
    */
   onRestart?: () => Promise<AgentRuntime | null>;
+  /** Serve the built Control UI from this directory. When true (default),
+   *  auto-resolves to dist/control-ui relative to the package root. */
+  serveUi?: boolean | string;
 }): Promise<{ port: number; close: () => Promise<void>; updateRuntime: (rt: AgentRuntime) => void }> {
   const port = opts?.port ?? 2138;
 
@@ -1503,9 +1588,24 @@ export async function startApiServer(opts?: {
   // Store the restart callback on the state so the route handler can access it.
   const onRestart = opts?.onRestart ?? null;
 
+  // Resolve the Control UI static root.
+  let staticRoot: string | null = null;
+  const serveUi = opts?.serveUi ?? true;
+  if (serveUi) {
+    const uiRoot = typeof serveUi === "string"
+      ? serveUi
+      : path.join(findOwnPackageRoot(import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname)), "dist", "control-ui");
+    if (fs.existsSync(path.join(uiRoot, "index.html"))) {
+      staticRoot = uiRoot;
+      addLog("info", `Serving Control UI from ${uiRoot}`);
+    } else {
+      addLog("warn", `Control UI not found at ${uiRoot} — run 'pnpm build' to build it`);
+    }
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
-      await handleRequest(req, res, state, { onRestart });
+      await handleRequest(req, res, state, { onRestart, staticRoot });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "internal error";
       addLog("error", msg, "api");

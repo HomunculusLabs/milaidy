@@ -126,6 +126,7 @@ async function main() {
   //    immediately while the heavier agent runtime boots in the background.
   const { port: actualPort, updateRuntime } = await startApiServer({
     port,
+    serveUi: false, // Vite dev server handles the UI in dev mode
     onRestart: async () => {
       await handleRestart("api");
       return currentRuntime;
