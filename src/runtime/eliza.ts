@@ -139,7 +139,7 @@ const CORE_PLUGINS: readonly string[] = [
   "@elizaos/plugin-plugin-manager",
   "@elizaos/plugin-browser",
   "@elizaos/plugin-cli",
-  "@elizaos/plugin-code",
+  // "@elizaos/plugin-code", // Temporarily disabled: provider spec resolution issue (coderStatusProvider)
   "@elizaos/plugin-computeruse",
   "@elizaos/plugin-edge-tts",
   "@elizaos/plugin-knowledge",
@@ -150,8 +150,8 @@ const CORE_PLUGINS: readonly string[] = [
   "@elizaos/plugin-todo",
   "@elizaos/plugin-trust",
   "@elizaos/plugin-vision",
-  "@elizaos/plugin-cron",
-  "@elizaos/plugin-form",
+  // "@elizaos/plugin-cron", // Disabled: crashes on startup (plugin creates rooms without worldId)
+  // "@elizaos/plugin-form", // Disabled: published package missing dist/index.js (node build lives in dist/node)
   "@elizaos/plugin-goals",
   "@elizaos/plugin-scheduling",
 ];

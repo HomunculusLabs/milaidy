@@ -45,3 +45,7 @@ const buildInfo = {
 
 fs.mkdirSync(distDir, { recursive: true });
 fs.writeFileSync(path.join(distDir, "build-info.json"), `${JSON.stringify(buildInfo, null, 2)}\n`);
+
+// Keep scripts/run-node.mjs's staleness detection in sync with `pnpm build`.
+// The runner uses dist/.buildstamp to decide whether it should rebuild.
+fs.writeFileSync(path.join(distDir, ".buildstamp"), `${Date.now()}\n`);

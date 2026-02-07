@@ -31,10 +31,10 @@ FAIL=0
 SKIP=0
 WARN=0
 
-pass()  { ((PASS++)); printf "${GREEN}  PASS${RESET}  %s\n" "$*"; }
-fail()  { ((FAIL++)); printf "${RED}  FAIL${RESET}  %s\n" "$*"; }
-skip()  { ((SKIP++)); printf "${DIM}  SKIP${RESET}  %s\n" "$*"; }
-warn()  { ((WARN++)); printf "${YELLOW}  WARN${RESET}  %s\n" "$*"; }
+pass()  { ((PASS+=1)); printf "${GREEN}  PASS${RESET}  %s\n" "$*"; }
+fail()  { ((FAIL+=1)); printf "${RED}  FAIL${RESET}  %s\n" "$*"; }
+skip()  { ((SKIP+=1)); printf "${DIM}  SKIP${RESET}  %s\n" "$*"; }
+warn()  { ((WARN+=1)); printf "${YELLOW}  WARN${RESET}  %s\n" "$*"; }
 header(){ printf "\n${BOLD}${CYAN}── %s ──${RESET}\n" "$*"; }
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -187,17 +187,17 @@ cleanup_server() {
 }
 trap cleanup_server EXIT
 
-# Start the gateway in the background with a test port
-MILAIDY_GATEWAY_PORT="$SERVER_PORT" \
+# Start the headless dev server in the background with a test port.
+# This avoids interactive onboarding and ensures the API server is available.
+MILAIDY_PORT="$SERVER_PORT" \
   MILAIDY_PROFILE="test" \
-  MILAIDY_SKIP_ONBOARDING="1" \
-  node scripts/run-node.mjs start --no-browser &>/dev/null &
+  node --import tsx src/runtime/dev-server.ts &>/dev/null &
 SERVER_PID=$!
 
 # Wait for the server to come up (up to 30s)
 SERVER_UP=false
 for i in $(seq 1 30); do
-  if curl -sf "http://127.0.0.1:${SERVER_PORT}/api/health" &>/dev/null; then
+  if curl -sf "http://127.0.0.1:${SERVER_PORT}/api/status" &>/dev/null; then
     SERVER_UP=true
     break
   fi
@@ -211,8 +211,8 @@ done
 if $SERVER_UP; then
   pass "API server started on port ${SERVER_PORT}"
 
-  # Check health endpoint
-  HEALTH_RESPONSE="$(curl -sf "http://127.0.0.1:${SERVER_PORT}/api/health" 2>/dev/null || echo "{}")"
+  # Check status endpoint
+  HEALTH_RESPONSE="$(curl -sf "http://127.0.0.1:${SERVER_PORT}/api/status" 2>/dev/null || echo "{}")"
   if [[ -n "$HEALTH_RESPONSE" ]]; then
     pass "Health endpoint responds"
   else
