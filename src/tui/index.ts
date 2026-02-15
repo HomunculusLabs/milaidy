@@ -1,7 +1,20 @@
+import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
 import type { AgentRuntime } from "@elizaos/core";
 import { Text } from "@elizaos/tui";
 import type { Api, Model } from "@mariozechner/pi-ai";
+import { loadMilaidyConfig, saveMilaidyConfig } from "../config/config.js";
+import {
+  DEFAULT_MODELS_DIR,
+  ensureModel,
+  MilaidyEmbeddingManager,
+} from "../runtime/embedding-manager.js";
+import {
+  EMBEDDING_PRESETS,
+  type EmbeddingTier,
+} from "../runtime/embedding-presets.js";
+import { getEmbeddingState } from "../runtime/embedding-state.js";
 import { registerPiAiModelHandler } from "../runtime/pi-ai-model-handler.js";
 import { createPiCredentialProvider } from "../runtime/pi-credentials.js";
 import {
@@ -19,6 +32,130 @@ export { MilaidyTUI } from "./tui-app.js";
 export interface LaunchTUIOptions {
   /** Override model, format: provider/modelId (e.g. anthropic/claude-sonnet-4-20250514) */
   modelOverride?: string;
+  /** API base URL for chat transport (e.g. http://127.0.0.1:2138). */
+  apiBaseUrl?: string;
+}
+
+// ---------------------------------------------------------------------------
+// /embeddings helper
+// ---------------------------------------------------------------------------
+
+function formatDownloadSize(mb: number): string {
+  return mb >= 1000 ? `${(mb / 1000).toFixed(1)}GB` : `${mb}MB`;
+}
+
+function isModelDownloaded(filename: string): boolean {
+  return fs.existsSync(path.join(DEFAULT_MODELS_DIR, filename));
+}
+
+const VALID_TIERS = new Set<string>(["fallback", "standard", "performance"]);
+
+function getEmbeddingOptions() {
+  const state = getEmbeddingState();
+  if (!state) return [];
+
+  return (["fallback", "standard", "performance"] as const).map((tier) => {
+    const preset = EMBEDDING_PRESETS[tier];
+    return {
+      tier,
+      label: preset.label,
+      dimensions: preset.dimensions,
+      downloaded: isModelDownloaded(preset.model),
+      active: state.preset?.tier === tier,
+    };
+  });
+}
+
+async function switchEmbeddingTier(tier: EmbeddingTier, tui: MilaidyTUI) {
+  const state = getEmbeddingState();
+
+  if (!state) {
+    tui.addToChatContainer(
+      new Text("Embedding manager not available.", 1, 0),
+    );
+    return;
+  }
+
+  const preset = EMBEDDING_PRESETS[tier];
+
+  if (state.preset?.tier === tier) {
+    tui.addToChatContainer(
+      new Text(`Already using ${preset.label} (${preset.model})`, 1, 0),
+    );
+    return;
+  }
+
+  if (preset.dimensions !== state.dimensions) {
+    tui.addToChatContainer(
+      new Text(
+        `⚠ Dimensions changing (${state.dimensions} → ${preset.dimensions}). ` +
+          "Existing memory embeddings will be re-indexed on next access.",
+        1,
+        0,
+      ),
+    );
+  }
+
+  if (!isModelDownloaded(preset.model)) {
+    tui.addToChatContainer(
+      new Text(
+        `Downloading ${preset.model} (${formatDownloadSize(preset.downloadSizeMB)})…`,
+        1,
+        0,
+      ),
+    );
+    try {
+      await ensureModel(DEFAULT_MODELS_DIR, preset.modelRepo, preset.model);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      tui.addToChatContainer(
+        new Text(`Download failed: ${msg}`, 1, 0),
+      );
+      return;
+    }
+  }
+
+  try {
+    await state.manager.dispose();
+  } catch {
+    // best-effort cleanup
+  }
+
+  const newManager = new MilaidyEmbeddingManager({
+    model: preset.model,
+    modelRepo: preset.modelRepo,
+    dimensions: preset.dimensions,
+    gpuLayers: preset.gpuLayers,
+  });
+
+  state.manager = newManager;
+  state.preset = preset;
+  state.dimensions = preset.dimensions;
+
+  try {
+    const cfg = loadMilaidyConfig();
+    cfg.embedding = {
+      ...cfg.embedding,
+      model: preset.model,
+      modelRepo: preset.modelRepo,
+      dimensions: preset.dimensions,
+      gpuLayers: preset.gpuLayers,
+    };
+    saveMilaidyConfig(cfg);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    tui.addToChatContainer(
+      new Text(`Warning: could not save config: ${msg}`, 1, 0),
+    );
+  }
+
+  tui.addToChatContainer(
+    new Text(
+      `Switched embedding model to ${preset.label} (${preset.model}, ${preset.dimensions} dims)`,
+      1,
+      0,
+    ),
+  );
 }
 
 export async function launchTUI(
@@ -37,14 +174,28 @@ export async function launchTUI(
   const largeModel = getPiModel(provider, id);
   const smallModel = largeModel;
 
-  const tui = new MilaidyTUI({ runtime });
-  const bridge = new ElizaTUIBridge(runtime, tui);
+  const tui = new MilaidyTUI({
+    runtime,
+    modelRegistry: {
+      authStorage: {
+        getApiKey: (provider: string) => piCreds.getApiKey(provider),
+        get: async (_provider: string) => undefined,
+      },
+    },
+  });
+  const bridge = new ElizaTUIBridge(runtime, tui, {
+    apiBaseUrl: options.apiBaseUrl,
+  });
 
   const controller = registerPiAiModelHandler(runtime, {
     largeModel,
     smallModel,
-    onStreamEvent: (event) => bridge.onStreamEvent(event),
-    getAbortSignal: () => bridge.getAbortSignal(),
+    ...(options.apiBaseUrl
+      ? {}
+      : {
+          onStreamEvent: (event) => bridge.onStreamEvent(event),
+          getAbortSignal: () => bridge.getAbortSignal(),
+        }),
     getApiKey: (p) => piCreds.getApiKey(p),
   });
 
@@ -97,6 +248,141 @@ export async function launchTUI(
           return;
         }
 
+        if (cmd === "embeddings") {
+          if (!argText) {
+            tui.openEmbeddings();
+            return;
+          }
+
+          const tier = argText.toLowerCase();
+          if (!VALID_TIERS.has(tier)) {
+            tui.addToChatContainer(
+              new Text(
+                `Unknown tier "${argText}". Use: fallback, standard, or performance`,
+                1,
+                0,
+              ),
+            );
+            return;
+          }
+
+          await switchEmbeddingTier(tier as EmbeddingTier, tui);
+          return;
+        }
+
+        if (cmd === "knowledge" || cmd === "ctx") {
+          const cfg = loadMilaidyConfig();
+          const ctxEnabled = cfg.knowledge?.contextualEnrichment === true;
+
+          if (!argText) {
+            // Display current knowledge enrichment status
+            const embState = getEmbeddingState();
+            const embModel = embState?.preset
+              ? `${embState.preset.model} (local, ${embState.preset.dimensions}d)`
+              : "unknown";
+
+            if (ctxEnabled) {
+              const lm = controller.getLargeModel();
+              tui.addToChatContainer(
+                new Text(
+                  [
+                    "Knowledge Enrichment: ON",
+                    `  Cloud model: ${lm.provider}/${lm.id} (via pi-ai)`,
+                    `  Embedding model: ${embModel}`,
+                    `  Docs path: ${cfg.knowledge?.docsPath ?? "./docs"}`,
+                  ].join("\n"),
+                  1,
+                  0,
+                ),
+              );
+            } else {
+              tui.addToChatContainer(
+                new Text(
+                  [
+                    "Knowledge Enrichment: OFF",
+                    `  Embedding model: ${embModel}`,
+                    "  Enable with: /knowledge on",
+                  ].join("\n"),
+                  1,
+                  0,
+                ),
+              );
+            }
+            return;
+          }
+
+          const action = argText.toLowerCase();
+          if (action === "on") {
+            if (ctxEnabled) {
+              tui.addToChatContainer(
+                new Text("Knowledge enrichment is already enabled.", 1, 0),
+              );
+              return;
+            }
+            cfg.knowledge = { ...cfg.knowledge, contextualEnrichment: true };
+            try {
+              saveMilaidyConfig(cfg);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              tui.addToChatContainer(
+                new Text(`Could not save config: ${msg}`, 1, 0),
+              );
+              return;
+            }
+            // Update the live runtime setting only after config is persisted
+            // so runtime and config stay in sync on save failure.
+            runtime.setSetting("CTX_KNOWLEDGE_ENABLED", "true");
+            tui.addToChatContainer(
+              new Text(
+                "Knowledge enrichment enabled. Takes effect on next document ingestion.\n" +
+                  "Document text will be sent to your cloud provider for enrichment; embeddings stay local.",
+                1,
+                0,
+              ),
+            );
+            return;
+          }
+
+          if (action === "off") {
+            if (!ctxEnabled) {
+              tui.addToChatContainer(
+                new Text("Knowledge enrichment is already disabled.", 1, 0),
+              );
+              return;
+            }
+            cfg.knowledge = { ...cfg.knowledge, contextualEnrichment: false };
+            try {
+              saveMilaidyConfig(cfg);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              tui.addToChatContainer(
+                new Text(`Could not save config: ${msg}`, 1, 0),
+              );
+              return;
+            }
+            // Remove the setting entirely (same as startup behavior where
+            // the key is simply omitted when CTX is off).
+            runtime.setSetting("CTX_KNOWLEDGE_ENABLED", null);
+            tui.addToChatContainer(
+              new Text(
+                "Knowledge enrichment disabled. Existing enriched chunks are not affected.",
+                1,
+                0,
+              ),
+            );
+            return;
+          }
+
+          tui.addToChatContainer(
+            new Text(
+              'Usage: /knowledge [on|off] — toggle contextual enrichment',
+              1,
+              0,
+            ),
+          );
+          return;
+        }
+
         if (cmd === "help") {
           tui.addToChatContainer(
             new Text(
@@ -104,7 +390,15 @@ export async function launchTUI(
                 "Commands:",
                 "  /model            open model selector",
                 "  /model <p/id>     switch model (e.g. anthropic/claude-sonnet-4-20250514)",
+                "  /embeddings       open embedding model popup",
+                "  /embeddings <t>   switch embedding (fallback|standard|performance)",
+                "  /knowledge       show knowledge enrichment status",
+                "  /knowledge on    enable contextual enrichment (cloud LLM + local embeddings)",
+                "  /knowledge off   disable contextual enrichment",
                 "  /clear            clear chat",
+                "  /settings         open settings panel",
+                "  /plugins          open plugin manager",
+                "  /usage            show provider quota usage",
                 "  /exit             quit",
               ].join("\n"),
               1,
@@ -116,6 +410,21 @@ export async function launchTUI(
 
         if (cmd === "clear") {
           tui.clearChat();
+          return;
+        }
+
+        if (cmd === "usage") {
+          tui.openUsageBar();
+          return;
+        }
+
+        if (cmd === "settings") {
+          tui.openSettings();
+          return;
+        }
+
+        if (cmd === "plugins") {
+          tui.openPlugins();
           return;
         }
 
@@ -142,6 +451,7 @@ export async function launchTUI(
   tui.setOnToggleToolExpand((expanded) =>
     bridge.setToolOutputExpanded(expanded),
   );
+  tui.setOnToggleThinking((enabled) => bridge.setShowThinking(enabled));
 
   tui.setOnCtrlC(() => {
     if (bridge.getIsProcessing()) {
@@ -169,6 +479,13 @@ export async function launchTUI(
         const msg = err instanceof Error ? err.message : String(err);
         tui.addToChatContainer(new Text(`Model switch error: ${msg}`, 1, 0));
       }
+    },
+  });
+
+  tui.setEmbeddingHandlers({
+    getOptions: () => getEmbeddingOptions(),
+    onSelectTier: async (tier) => {
+      await switchEmbeddingTier(tier, tui);
     },
   });
 

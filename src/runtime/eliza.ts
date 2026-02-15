@@ -73,6 +73,7 @@ import {
   type EmbeddingPreset,
   type EmbeddingTier,
 } from "./embedding-presets.js";
+import { setEmbeddingState } from "./embedding-state.js";
 import { createMilaidyPlugin } from "./milaidy-plugin.js";
 import {
   createPhettaCompanionPlugin,
@@ -1567,6 +1568,38 @@ async function runFirstTimeSetup(
     );
   }
 
+  // ── Step 4c: Knowledge enrichment (CTX) ────────────────────────────────
+  // Only offer when a cloud provider is available (not ollama-only).
+  // CTX uses the cloud LLM to rewrite/enrich document chunks before
+  // embedding, improving RAG search quality. Embeddings stay fully local.
+  let enableCtxEnrichment = false;
+  let ctxPromptShown = false;
+
+  const hasCloudProvider =
+    isPiAiEnabledFromEnv() ||
+    (detectedProvider != null && detectedProvider.id !== "ollama") ||
+    (providerEnvKey != null && providerEnvKey !== "OLLAMA_BASE_URL");
+
+  if (runMode !== "cloud" && hasCloudProvider) {
+    const ctxChoice = await clack.confirm({
+      message: `${name}: Enable contextual knowledge enrichment?\n` +
+        "  This uses your cloud model to improve RAG search quality.\n" +
+        "  Embeddings stay fully local. Document text is sent to your cloud provider.\n" +
+        "  Recommended when using a cloud provider.",
+      initialValue: true,
+    });
+
+    if (clack.isCancel(ctxChoice)) cancelOnboarding();
+
+    ctxPromptShown = true;
+    enableCtxEnrichment = ctxChoice;
+    if (enableCtxEnrichment) {
+      clack.log.success("Contextual knowledge enrichment enabled.");
+    } else {
+      clack.log.message("Knowledge enrichment skipped — can be enabled later with /knowledge on.");
+    }
+  }
+
   // ── Step 5: Wallet setup ───────────────────────────────────────────────
   // Offer to generate or import wallets for EVM and Solana. Keys are
   // stored in config.env and process.env, making them available to
@@ -1748,6 +1781,16 @@ async function runFirstTimeSetup(
     };
   }
 
+  if (ctxPromptShown) {
+    // Persist the user's explicit choice (true or false) only when they
+    // were actually shown the CTX prompt, so a preseeded value isn't
+    // overwritten in cloud mode or when the prompt is skipped.
+    updated.knowledge = {
+      ...updated.knowledge,
+      contextualEnrichment: enableCtxEnrichment,
+    };
+  }
+
   try {
     saveMilaidyConfig(updated);
   } catch (err) {
@@ -1772,6 +1815,21 @@ export interface StartElizaOptions {
    * server (used by `dev-server.ts`).
    */
   headless?: boolean;
+
+  /**
+   * Optional progress reporter for the TUI loading screen.
+   * When provided, phase callbacks are emitted at key boot milestones.
+   */
+  progressReporter?: import("./boot-progress.js").BootProgressReporter;
+
+  /**
+   * When true (default), wait for AgentSkillsService startup before
+   * returning the runtime.
+   *
+   * TUI boot can disable this to avoid feeling "stuck" at the loading
+   * screen while skills continue loading in the background.
+   */
+  waitForSkillsService?: boolean;
 }
 
 export interface BootElizaRuntimeOptions {
@@ -1781,6 +1839,26 @@ export interface BootElizaRuntimeOptions {
    * onboarding prompts would break the alternate screen.
    */
   requireConfig?: boolean;
+
+  /**
+   * When true, run the interactive onboarding flow (via @clack/prompts)
+   * before booting the runtime in headless mode.  This is used by the TUI
+   * command so users can set up milaidy without running a separate CLI
+   * command first.  Onboarding is skipped when the config already has an
+   * agent name (i.e. setup was already completed).
+   */
+  runOnboarding?: boolean;
+
+  /**
+   * Optional progress reporter for the TUI loading screen.
+   * Forwarded to {@link startEliza}.
+   */
+  progressReporter?: import("./boot-progress.js").BootProgressReporter;
+
+  /**
+   * Forwarded to {@link startEliza}. Defaults to true.
+   */
+  waitForSkillsService?: boolean;
 }
 
 /**
@@ -1798,7 +1876,28 @@ export async function bootElizaRuntime(
     );
   }
 
-  const runtime = await startEliza({ headless: true });
+  // Run interactive onboarding before headless boot when requested (TUI mode).
+  if (opts.runOnboarding) {
+    let config: MilaidyConfig;
+    try {
+      config = loadMilaidyConfig();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        config = {} as MilaidyConfig;
+      } else {
+        throw err;
+      }
+    }
+    // runFirstTimeSetup is a no-op when onboarding is already complete
+    // (agent name exists in config).
+    await runFirstTimeSetup(config);
+  }
+
+  const runtime = await startEliza({
+    headless: true,
+    progressReporter: opts.progressReporter,
+    waitForSkillsService: opts.waitForSkillsService,
+  });
   if (!runtime) {
     throw new Error("Failed to boot runtime");
   }
@@ -1849,6 +1948,9 @@ export async function startEliza(
   if (!process.env.LOG_LEVEL) {
     process.env.LOG_LEVEL = config.logging?.level ?? "error";
   }
+
+  // ── Boot progress: config loaded ──────────────────────────────────────
+  opts?.progressReporter?.phase("config");
 
   // 2. Push channel secrets into process.env for plugin discovery
   applyConnectorSecretsToEnv(config);
@@ -1923,6 +2025,9 @@ export async function startEliza(
   const phettaPlugin = phettaOpts.enabled
     ? createPhettaCompanionPlugin(phettaOpts)
     : null;
+
+  // ── Boot progress: resolving plugins ─────────────────────────────────
+  opts?.progressReporter?.phase("plugins");
 
   // 6. Resolve and load plugins
   // In headless (GUI) mode before onboarding, the user hasn't configured a
@@ -2158,6 +2263,19 @@ export async function startEliza(
       ...(config.features?.vision === false
         ? { DISABLE_IMAGE_DESCRIPTION: "true" }
         : {}),
+      // Forward knowledge/CTX enrichment config so plugin-knowledge picks
+      // it up via runtime.getSetting(). When contextualEnrichment is on and
+      // no TEXT_PROVIDER env var is set, plugin-knowledge falls through to
+      // runtime.useModel(TEXT_LARGE) which pi-ai handles.
+      ...(config.knowledge?.contextualEnrichment
+        ? { CTX_KNOWLEDGE_ENABLED: "true" }
+        : {}),
+      ...(config.knowledge?.loadDocsOnStartup === false
+        ? { LOAD_DOCS_ON_STARTUP: "false" }
+        : {}),
+      ...(config.knowledge?.docsPath
+        ? { KNOWLEDGE_PATH: config.knowledge.docsPath }
+        : {}),
     },
   });
 
@@ -2196,6 +2314,9 @@ export async function startEliza(
   //     This is OPTIONAL — without it, some features (memory, todos) won't work.
   //     runtime.db is a getter that returns this.adapter.db and throws when
   //     this.adapter is undefined, so plugins that use runtime.db will fail.
+  // ── Boot progress: initializing database ─────────────────────────────
+  opts?.progressReporter?.phase("database");
+
   if (sqlPlugin) {
     await runtime.registerPlugin(sqlPlugin.plugin);
 
@@ -2245,21 +2366,41 @@ export async function startEliza(
   //     (supersedes the upstream plugin-local-embedding's priority 10).
   //     The upstream plugin still provides TEXT_TOKENIZER_ENCODE/DECODE;
   //     we only replace its embedding with Metal GPU + idle unloading.
-  //     Uses `let` so hot-reload can swap to a fresh manager instance.
+  //     The embedding state is published to a module-level singleton so
+  //     the TUI can hot-swap the model via /embeddings.
+  // ── Boot progress: loading embedding model ──────────────────────────
+  opts?.progressReporter?.phase("embeddings");
+
   const defaultEmbeddingPreset = detectEmbeddingPreset();
-  let embeddingManager = new MilaidyEmbeddingManager({
-    model: config.embedding?.model,
-    modelRepo: config.embedding?.modelRepo,
-    dimensions: config.embedding?.dimensions,
-    gpuLayers: config.embedding?.gpuLayers,
-    idleTimeoutMs: (config.embedding?.idleTimeoutMinutes ?? 30) * 60 * 1000,
-  });
   const embeddingDimensions =
     config.embedding?.dimensions ?? defaultEmbeddingPreset.dimensions;
   const embeddingModel =
     config.embedding?.model ?? defaultEmbeddingPreset.model;
   const embeddingGpuLayers =
     config.embedding?.gpuLayers ?? defaultEmbeddingPreset.gpuLayers;
+
+  // Determine the active preset (if the config matches a known preset).
+  const activePreset =
+    (Object.values(EMBEDDING_PRESETS) as EmbeddingPreset[]).find(
+      (p) => p.model === embeddingModel,
+    ) ?? defaultEmbeddingPreset;
+
+  const embeddingManager = new MilaidyEmbeddingManager({
+    model: config.embedding?.model,
+    modelRepo: config.embedding?.modelRepo,
+    dimensions: config.embedding?.dimensions,
+    gpuLayers: config.embedding?.gpuLayers,
+    idleTimeoutMs: (config.embedding?.idleTimeoutMinutes ?? 30) * 60 * 1000,
+  });
+
+  // Publish state so the TUI /embeddings command can hot-swap the manager.
+  const embeddingState = {
+    manager: embeddingManager,
+    preset: activePreset,
+    dimensions: embeddingDimensions,
+  };
+  setEmbeddingState(embeddingState);
+
   runtime.registerModel(
     ModelType.TEXT_EMBEDDING,
     async (_runtime, params) => {
@@ -2269,8 +2410,8 @@ export async function startEliza(
           : params && typeof params === "object" && "text" in params
             ? (params as { text: string }).text
             : null;
-      if (!text) return new Array(embeddingDimensions).fill(0);
-      return embeddingManager.generateEmbedding(text);
+      if (!text) return new Array(embeddingState.dimensions).fill(0);
+      return embeddingState.manager.generateEmbedding(text);
     },
     "milaidy",
     100,
@@ -2282,8 +2423,29 @@ export async function startEliza(
       `gpu=${embeddingGpuLayers})`,
   );
 
-  // 8. Initialize the runtime (registers remaining plugins, starts services)
-  await runtime.initialize();
+  // 8. Initialize the runtime (registers remaining plugins, starts services).
+  //    Temporarily suppress known-harmless warnings from node-llama-cpp that
+  //    @elizaos/plugin-local-embedding triggers (it calls getLlama() with no
+  //    logLevel config).  Our MilaidyEmbeddingManager already suppresses these
+  //    via logLevel: error, but the upstream plugin doesn't.
+  // ── Boot progress: starting runtime ──────────────────────────────────
+  opts?.progressReporter?.phase("runtime");
+
+  const _origConsoleWarn = console.warn;
+  const SUPPRESS_PATTERNS = [
+    "special_eos_id is not in special_eog_ids",
+    "to tokenize text and then detokenize it resulted in a different text",
+  ];
+  console.warn = (...args: unknown[]) => {
+    const msg = String(args[0] ?? "");
+    if (SUPPRESS_PATTERNS.some((p) => msg.includes(p))) return;
+    _origConsoleWarn.apply(console, args);
+  };
+  try {
+    await runtime.initialize();
+  } finally {
+    console.warn = _origConsoleWarn;
+  }
   ensureTrajectoryLoggerEnabled(runtime, "runtime.initialize()");
 
   // 8b. Wait for AgentSkillsService to finish loading.
@@ -2292,73 +2454,85 @@ export async function startEliza(
   //     explicit await the runtime would be returned to the caller (API server,
   //     dev-server) before skills are loaded, causing the /api/skills endpoint
   //     to return an empty list.
-  try {
-    const skillServicePromise = runtime.getServiceLoadPromise(
-      "AGENT_SKILLS_SERVICE",
-    );
-    // Give the service up to 30 s to load (matches the core runtime timeout).
-    const timeout = new Promise<never>((_resolve, reject) => {
-      setTimeout(() => {
-        reject(
-          new Error(
-            "[milaidy] AgentSkillsService timed out waiting to initialise (30 s)",
-          ),
-        );
-      }, 30_000);
-    });
-    await Promise.race([skillServicePromise, timeout]);
+  // ── Boot progress: loading skills ───────────────────────────────────
+  opts?.progressReporter?.phase("skills");
 
-    // Log skill-loading summary now that the service is guaranteed ready.
-    const svc = runtime.getService("AGENT_SKILLS_SERVICE") as
-      | {
-          getCatalogStats?: () => {
-            loaded: number;
-            total: number;
-            storageType: string;
-          };
-        }
-      | null
-      | undefined;
-    if (svc?.getCatalogStats) {
-      const stats = svc.getCatalogStats();
-      logger.info(
-        `[milaidy] AgentSkills ready — ${stats.loaded} skills loaded, ` +
-          `${stats.total} in catalog (storage: ${stats.storageType})`,
+  const waitForSkillsService = opts?.waitForSkillsService ?? true;
+  if (!waitForSkillsService) {
+    logger.debug(
+      "[milaidy] Skipping AgentSkillsService wait (boot continues while skills load in background)",
+    );
+  }
+
+  if (waitForSkillsService) {
+    try {
+      const skillServicePromise = runtime.getServiceLoadPromise(
+        "AGENT_SKILLS_SERVICE",
+      );
+      // Give the service up to 30 s to load (matches the core runtime timeout).
+      const timeout = new Promise<never>((_resolve, reject) => {
+        setTimeout(() => {
+          reject(
+            new Error(
+              "[milaidy] AgentSkillsService timed out waiting to initialise (30 s)",
+            ),
+          );
+        }, 30_000);
+      });
+      await Promise.race([skillServicePromise, timeout]);
+
+      // Log skill-loading summary now that the service is guaranteed ready.
+      const svc = runtime.getService("AGENT_SKILLS_SERVICE") as
+        | {
+            getCatalogStats?: () => {
+              loaded: number;
+              total: number;
+              storageType: string;
+            };
+          }
+        | null
+        | undefined;
+      if (svc?.getCatalogStats) {
+        const stats = svc.getCatalogStats();
+        logger.info(
+          `[milaidy] AgentSkills ready — ${stats.loaded} skills loaded, ` +
+            `${stats.total} in catalog (storage: ${stats.storageType})`,
+        );
+      }
+
+      // Guard against non-string skill.description values.
+      // The bundled YAML parser produces {} for multi-line descriptions, which
+      // crashes findBestLocalMatch / scoreSkillMatch (call .toLowerCase() on it).
+      // Instead of a one-shot sanitize (which misses skills loaded later by
+      // syncCatalog / autoRefresh), we monkey-patch getLoadedSkills to always
+      // return sanitized values.
+      const svcAny = svc as Record<string, unknown> | null | undefined;
+      const origGetLoaded = svcAny?.getLoadedSkills as
+        | ((...args: unknown[]) => Array<Record<string, unknown>>)
+        | undefined;
+      if (origGetLoaded && svcAny) {
+        (svcAny as Record<string, unknown>).getLoadedSkills = function (
+          ...args: unknown[]
+        ) {
+          const skills = origGetLoaded.apply(this, args);
+          for (const skill of skills) {
+            if (typeof skill.description !== "string") {
+              skill.description =
+                skill.description == null
+                  ? ""
+                  : JSON.stringify(skill.description);
+            }
+          }
+          return skills;
+        };
+        logger.debug("[milaidy] Patched getLoadedSkills to guard descriptions");
+      }
+    } catch (err) {
+      // Non-fatal — the agent can operate without skills.
+      logger.warn(
+        `[milaidy] AgentSkillsService did not initialise in time: ${formatError(err)}`,
       );
     }
-
-    // Guard against non-string skill.description values.
-    // The bundled YAML parser produces {} for multi-line descriptions, which
-    // crashes findBestLocalMatch / scoreSkillMatch (call .toLowerCase() on it).
-    // Instead of a one-shot sanitize (which misses skills loaded later by
-    // syncCatalog / autoRefresh), we monkey-patch getLoadedSkills to always
-    // return sanitized values.
-    const svcAny = svc as Record<string, unknown> | null | undefined;
-    const origGetLoaded = svcAny?.getLoadedSkills as
-      | ((...args: unknown[]) => Array<Record<string, unknown>>)
-      | undefined;
-    if (origGetLoaded && svcAny) {
-      (svcAny as Record<string, unknown>).getLoadedSkills = function (
-        ...args: unknown[]
-      ) {
-        const skills = origGetLoaded.apply(this, args);
-        for (const skill of skills) {
-          if (typeof skill.description !== "string") {
-            skill.description =
-              skill.description == null
-                ? ""
-                : JSON.stringify(skill.description);
-          }
-        }
-        return skills;
-      };
-      logger.debug("[milaidy] Patched getLoadedSkills to guard descriptions");
-    }
-  } catch (err) {
-    // Non-fatal — the agent can operate without skills.
-    logger.warn(
-      `[milaidy] AgentSkillsService did not initialise in time: ${formatError(err)}`,
-    );
   }
 
   // 9. Graceful shutdown handler
@@ -2390,7 +2564,7 @@ export async function startEliza(
         logger.warn(`[milaidy] Sandbox shutdown error: ${formatError(err)}`);
       }
       try {
-        await embeddingManager.dispose();
+        await embeddingState.manager.dispose();
       } catch (err) {
         logger.warn(
           `[milaidy] Error disposing embedding manager: ${formatError(err)}`,
@@ -2427,6 +2601,9 @@ export async function startEliza(
     logger.warn(`[milaidy] Hooks system could not load: ${formatError(err)}`);
   }
 
+  // ── Boot progress: ready! ─────────────────────────────────────────────
+  opts?.progressReporter?.complete();
+
   // ── Headless mode — return runtime for API server wiring ──────────────
   if (opts?.headless) {
     logger.info(
@@ -2452,7 +2629,7 @@ export async function startEliza(
         try {
           // Stop the old runtime to release resources (DB connections, timers, etc.)
           try {
-            await embeddingManager.dispose();
+            await embeddingState.manager.dispose();
           } catch (disposeErr) {
             logger.warn(
               `[milaidy] Hot-reload: embedding manager dispose failed: ${formatError(disposeErr)}`,
@@ -2533,6 +2710,16 @@ export async function startEliza(
               ...(freshConfig.features?.vision === false
                 ? { DISABLE_IMAGE_DESCRIPTION: "true" }
                 : {}),
+              // Forward knowledge/CTX enrichment config on hot reload.
+              ...(freshConfig.knowledge?.contextualEnrichment
+                ? { CTX_KNOWLEDGE_ENABLED: "true" }
+                : {}),
+              ...(freshConfig.knowledge?.loadDocsOnStartup === false
+                ? { LOAD_DOCS_ON_STARTUP: "false" }
+                : {}),
+              ...(freshConfig.knowledge?.docsPath
+                ? { KNOWLEDGE_PATH: freshConfig.knowledge.docsPath }
+                : {}),
             },
           });
 
@@ -2588,7 +2775,8 @@ export async function startEliza(
           }
 
           // Re-create embedding manager with fresh config and register
-          // at priority 100 (same as initial startup).
+          // at priority 100 (same as initial startup).  Update the shared
+          // embedding state so the TUI /embeddings command stays in sync.
           const freshDefaultEmbeddingPreset = detectEmbeddingPreset();
           const freshEmbeddingManager = new MilaidyEmbeddingManager({
             model: freshConfig.embedding?.model,
@@ -2601,6 +2789,12 @@ export async function startEliza(
           const freshEmbeddingDims =
             freshConfig.embedding?.dimensions ??
             freshDefaultEmbeddingPreset.dimensions;
+          const freshEmbeddingModel =
+            freshConfig.embedding?.model ?? freshDefaultEmbeddingPreset.model;
+          const freshActivePreset =
+            (Object.values(EMBEDDING_PRESETS) as EmbeddingPreset[]).find(
+              (p) => p.model === freshEmbeddingModel,
+            ) ?? freshDefaultEmbeddingPreset;
           newRuntime.registerModel(
             ModelType.TEXT_EMBEDDING,
             async (_rt, params) => {
@@ -2610,15 +2804,17 @@ export async function startEliza(
                   : params && typeof params === "object" && "text" in params
                     ? (params as { text: string }).text
                     : null;
-              if (!text) return new Array(freshEmbeddingDims).fill(0);
-              return freshEmbeddingManager.generateEmbedding(text);
+              if (!text) return new Array(embeddingState.dimensions).fill(0);
+              return embeddingState.manager.generateEmbedding(text);
             },
             "milaidy",
             100,
           );
-          // Swap the outer reference so shutdown/next-reload disposes
-          // the correct instance.
-          embeddingManager = freshEmbeddingManager;
+          // Swap the shared state so shutdown/next-reload disposes
+          // the correct instance and the TUI stays up to date.
+          embeddingState.manager = freshEmbeddingManager;
+          embeddingState.preset = freshActivePreset;
+          embeddingState.dimensions = freshEmbeddingDims;
 
           await newRuntime.initialize();
           ensureTrajectoryLoggerEnabled(

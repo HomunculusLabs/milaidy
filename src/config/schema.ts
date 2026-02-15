@@ -148,6 +148,7 @@ const GROUP_LABELS: Record<string, string> = {
   skills: "Skills",
   plugins: "Plugins",
   embedding: "Embedding",
+  knowledge: "Knowledge & RAG",
   discovery: "Discovery",
   presence: "Presence",
   voicewake: "Voice Wake",
@@ -176,6 +177,7 @@ const GROUP_ORDER: Record<string, number> = {
   skills: 200,
   plugins: 205,
   embedding: 205,
+  knowledge: 207,
   discovery: 210,
   presence: 220,
   voicewake: 230,
@@ -358,6 +360,10 @@ const FIELD_LABELS: Record<string, string> = {
   "embedding.dimensions": "Embedding Dimensions",
   "embedding.gpuLayers": "Embedding GPU Layers",
   "embedding.idleTimeoutMinutes": "Embedding Idle Timeout (min)",
+  knowledge: "Knowledge & RAG",
+  "knowledge.contextualEnrichment": "Contextual Enrichment",
+  "knowledge.loadDocsOnStartup": "Load Docs on Startup",
+  "knowledge.docsPath": "Documents Path",
   memory: "Memory",
   "memory.backend": "Memory Backend",
   "memory.citations": "Memory Citations Mode",
@@ -723,6 +729,13 @@ const FIELD_HELP: Record<string, string> = {
     'GPU layers for embedding model loading: "auto" (Metal on macOS), "max", or a number (default: "auto" on macOS, 0 elsewhere).',
   "embedding.idleTimeoutMinutes":
     "Minutes of inactivity before unloading the embedding model from memory (default: 30, 0 = never unload).",
+  knowledge: "Knowledge & RAG enrichment configuration.",
+  "knowledge.contextualEnrichment":
+    "Enable contextual chunk enrichment via cloud LLM before embedding. Document text is sent to your cloud provider; embeddings stay local (default: false).",
+  "knowledge.loadDocsOnStartup":
+    "Auto-load documents from docsPath on agent startup (default: true).",
+  "knowledge.docsPath":
+    'Directory to scan for knowledge documents (default: "./docs").',
   memory: "Memory backend configuration (global).",
   "memory.backend":
     'Memory backend ("builtin" for Milaidy embeddings, "qmd" for QMD sidecar).',

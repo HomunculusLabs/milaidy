@@ -553,6 +553,17 @@ export type EmbeddingConfig = {
   idleTimeoutMinutes?: number;
 };
 
+// --- Knowledge / RAG enrichment config ---
+
+export type KnowledgeConfig = {
+  /** Enable contextual chunk enrichment via cloud LLM before embedding (default: false). */
+  contextualEnrichment?: boolean;
+  /** Auto-load documents from docsPath on agent startup (default: true). */
+  loadDocsOnStartup?: boolean;
+  /** Directory to scan for knowledge documents (default: "./docs"). */
+  docsPath?: string;
+};
+
 // --- Update/release channel types ---
 
 export type UpdateConfig = {
@@ -660,6 +671,8 @@ export type MilaidyConfig = {
   memory?: MemoryConfig;
   /** Local embedding model configuration (Metal GPU, idle unloading, model selection). */
   embedding?: EmbeddingConfig;
+  /** Knowledge & RAG enrichment configuration (contextual enrichment, docs path). */
+  knowledge?: KnowledgeConfig;
   /** Database provider and connection configuration (local-only feature). */
   database?: DatabaseConfig;
   /** ElizaCloud integration for remote agent provisioning and inference. */
