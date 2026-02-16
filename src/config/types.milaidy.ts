@@ -455,6 +455,15 @@ export type PluginInstallRecord = {
   installedAt?: string;
 };
 
+export type RegistryEndpoint = {
+  /** Human-readable label for this registry. */
+  label: string;
+  /** URL to the registry JSON (same format as generated-registry.json). */
+  url: string;
+  /** Whether this endpoint is active. Default: true. */
+  enabled?: boolean;
+};
+
 export type PluginsConfig = {
   /** Enable or disable plugin loading. */
   enabled?: boolean;
@@ -466,6 +475,7 @@ export type PluginsConfig = {
   slots?: PluginSlotsConfig;
   entries?: Record<string, PluginEntryConfig>;
   installs?: Record<string, PluginInstallRecord>;
+  registryEndpoints?: RegistryEndpoint[];
 };
 
 // --- Cloud types (ElizaCloud integration) ---
